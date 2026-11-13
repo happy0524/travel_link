@@ -1,0 +1,14 @@
+﻿<!doctype html>
+<html lang="ko"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Travel Link · 하루를 연결하다</title><link rel="stylesheet" href="/src/styles.css"></head>
+<body>
+<header><a class="brand" href="/"><span class="brand-mark">↗</span> travel link<span class="brand-sub">나만의 속도로, 하루를 연결하다</span></a><span class="badge" id="source-badge">SEOUL / DEMO</span><button id="service">Google 지도 연결</button></header>
+<div class="toolbar"><label>여행 날짜<input id="date" type="date" required></label><span id="weekday"></span><label>출발 시간<input id="time" type="time" value="09:00" required></label><div class="timezone"><small>현지 시간대</small><strong id="zone">Asia/Seoul</strong></div><form id="search-form"><span>⌕</span><input id="search" placeholder="어디를 가고 싶으세요?" aria-label="장소 검색" autocomplete="off"><button>검색</button><div id="results"></div></form></div>
+<main><section class="map-area" aria-label="여행 지도">
+<div id="google-map"></div><svg id="map" viewBox="0 0 1000 800" aria-label="서울 샘플 지도"></svg>
+<div class="map-heading"><span class="eyebrow">YOUR DAY, CONNECTED</span><h1>서울에서의 하루</h1><p id="map-caption">장소를 고르고, 순서를 바꾸며 여행을 그려보세요.</p></div>
+<div class="map-tools"><button id="zoom-in" aria-label="지도 확대">+</button><button id="zoom-out" aria-label="지도 축소">−</button><button id="fit" aria-label="전체 경로 보기">⌖</button></div>
+<div class="map-legend"><span class="dot"></span> 방문 장소 <span class="line"></span> 이동 방향 <span id="map-disclaimer">샘플 지도 · 선과 시간은 시연용</span></div>
+<aside id="details" class="details" hidden></aside>
+<div id="edge-settings" class="edge-settings" hidden></div>
+</section><aside class="itinerary"><div class="itinerary-heading"><div><span class="eyebrow">DAY 01</span><h2>내 여행 일정 <span id="count">0</span></h2></div><button id="sample">샘플 일정</button></div><p class="hint">카드를 드래그해 순서를 바꿔보세요.<br>첫 번째 장소가 출발점이 됩니다.</p><div id="summary" aria-live="polite"></div><div id="visits"></div><footer><strong>당신의 여행, 당신의 순서.</strong><p>경로 자동 최적화 없이 직접 계획하세요.</p><details><summary>데모 검증 도구</summary><label>경로 응답<select id="scenario"><option value="normal">정상 샘플</option><option value="no-transit">대중교통 없음 → 자동차</option><option value="no-routes">모든 경로 없음</option><option value="error">요청 실패 (자동 전환 안 함)</option></select></label></details></footer></aside></main>
+<div id="notice" role="status" aria-live="polite"></div><script type="module" src="/src/app.js"></script></body></html>
