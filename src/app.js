@@ -7,6 +7,7 @@ import {requestConfig} from './request-config.js';
 import {createMonitor,debounce} from './requests.js';
 import {mapOptions,routeArrows} from './map-style.js';
 import {inkRoute,inkNode} from './map-ink.js';
+import {watercolorPaintDefs} from './map-paint.js';
 const $=s=>document.querySelector(s);
 const esc=s=>String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 let visits=[],segments={},result={rows:[],routes:{}},selected=null,selectedPlace=null,edge=null,loading=false;
@@ -160,7 +161,7 @@ function renderEdge(){
  panel.querySelectorAll('[data-mode]').forEach(b=>b.onclick=()=>{if(segments[edge].mode===b.dataset.mode)return;segments[edge]={mode:b.dataset.mode};refresh('mode');});
 }
 const project=p=>({x:(p.lng-126.963)*17000+50,y:(37.592-p.lat)*15000+50});
-const mapBase='<defs><pattern id="blocks" width="100" height="80" patternUnits="userSpaceOnUse" patternTransform="rotate(-12)"><rect width="100" height="80" fill="#C8D4CB"/><rect x="7" y="7" width="85" height="65" rx="7" fill="#B4C2B8" stroke="#789282" stroke-width="6"/></pattern></defs><rect x="-5000" y="-5000" width="10000" height="10000" fill="url(#blocks)"/><path d="M-100 155 Q170 175 220 55 Q310 -90 510 15 L570 -200 -100 -200Z" fill="#4D775F"/><path d="M180 800 Q170 570 370 610 Q500 625 590 800" fill="#4D775F"/><path d="M-100 421 Q230 390 450 425 T1100 430" fill="none" stroke="#B6C8C1" stroke-width="19"/><g fill="none" stroke="#164F3B" stroke-width="15"><path d="M-100 333 L1100 333"/><path d="M270 -100 L260 400 90 850"/><path d="M-100 555 L1100 520"/><path d="M700 -100 L750 900"/></g><g fill="#143B2C" font-size="16" letter-spacing="5"><text x="540" y="230">종로구</text><text x="555" y="565">중구</text><text x="295" y="690">남산</text><text x="560" y="410" font-size="11">청계천</text></g>';
+const mapBase='<defs>'+watercolorPaintDefs+'<pattern id="blocks" width="100" height="80" patternUnits="userSpaceOnUse" patternTransform="rotate(-12)"><rect width="100" height="80" fill="#E8E3DA"/><rect x="7" y="7" width="85" height="65" rx="1" fill="#DED9CF" stroke="#555059" stroke-width="1.1"/></pattern></defs><rect x="-5000" y="-5000" width="10000" height="10000" fill="url(#blocks)"/><path d="M-100 155 Q170 175 220 55 Q310 -90 510 15 L570 -200 -100 -200Z" fill="#57945B" filter="url(#atlas-pigment)"/><path d="M180 800 Q170 570 370 610 Q500 625 590 800" fill="#57945B" filter="url(#atlas-pigment)"/><path d="M-100 421 Q230 390 450 425 T1100 430" fill="none" stroke="#9BC9E8" stroke-width="19" filter="url(#atlas-pigment)"/><g fill="none" stroke="#1D1C22" stroke-width="4.5"><path d="M-100 333 L1100 333"/><path d="M270 -100 L260 400 90 850"/><path d="M-100 555 L1100 520"/><path d="M700 -100 L750 900"/></g><g fill="#242129" font-size="16" letter-spacing="5"><text x="540" y="230">종로구</text><text x="555" y="565">중구</text><text x="295" y="690">남산</text><text x="560" y="410" font-size="11">청계천</text></g>';
 function decode(encoded){let index=0,lat=0,lng=0,points=[];while(index<encoded.length){const read=()=>{let b,shift=0,n=0;do{b=encoded.charCodeAt(index++)-63;n|=(b&31)<<shift;shift+=5;}while(b>=32);return n&1?~(n>>1):n>>1;};lat+=read();lng+=read();points.push({lat:lat/1e5,lng:lng/1e5});}return points;}
 function graphics(proj,isLive=false){
  const unit=isLive?1:Math.max(view[2]/$('#map').clientWidth,view[3]/$('#map').clientHeight);

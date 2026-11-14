@@ -1,30 +1,30 @@
 // Embedded JSON styling applies only when no cloud Map ID is configured.
-export const greenMapStyles = [
-  {elementType:'geometry',stylers:[{color:'#C8D4CB'}]},
-  {elementType:'labels.text.fill',stylers:[{color:'#143B2C'}]},
-  {elementType:'labels.text.stroke',stylers:[{color:'#C8D4CB'}]},
+export const watercolorMapStyles = [
+  {elementType:'geometry',stylers:[{color:'#E8E3DA'}]},
+  {elementType:'labels.text.fill',stylers:[{color:'#242129'}]},
+  {elementType:'labels.text.stroke',stylers:[{color:'#E8E3DA'}]},
   {elementType:'labels.icon',stylers:[{visibility:'off'}]},
-  {featureType:'landscape.man_made',elementType:'geometry.fill',stylers:[{color:'#B4C2B8'}]},
-  {featureType:'landscape.man_made',elementType:'geometry.stroke',stylers:[{color:'#789282'}]},
-  {featureType:'administrative',elementType:'geometry.stroke',stylers:[{color:'#789282'}]},
-  {featureType:'administrative.land_parcel',elementType:'labels',stylers:[{visibility:'off'}]},
+  {elementType:'labels',stylers:[{visibility:'off'}]},
+  {featureType:'administrative.locality',elementType:'labels.text',stylers:[{visibility:'on'}]},
+  {featureType:'administrative.neighborhood',elementType:'labels.text',stylers:[{visibility:'on'}]},
+  {featureType:'landscape.natural',elementType:'geometry.fill',stylers:[{color:'#86AD75'}]},
+  {featureType:'landscape.man_made',elementType:'geometry.fill',stylers:[{color:'#DED9CF'}]},
+  {featureType:'landscape.man_made',elementType:'geometry.stroke',stylers:[{color:'#68636A'},{weight:.5}]},
+  {featureType:'administrative',elementType:'geometry.stroke',stylers:[{color:'#68636A'},{weight:.5}]},
   {featureType:'poi',elementType:'labels',stylers:[{visibility:'off'}]},
-  {featureType:'poi.attraction',elementType:'labels.text',stylers:[{visibility:'on'}]},
-  {featureType:'poi.park',elementType:'geometry',stylers:[{color:'#4D775F'}]},
+  {featureType:'poi.park',elementType:'geometry',stylers:[{color:'#57945B'}]},
   {featureType:'transit',elementType:'labels',stylers:[{visibility:'off'}]},
-  {featureType:'road',elementType:'geometry.fill',stylers:[{color:'#6F8F7D'}]},
-  {featureType:'road',elementType:'geometry.stroke',stylers:[{color:'#789282'}]},
-  {featureType:'road.local',elementType:'labels',stylers:[{visibility:'off'}]},
-  {featureType:'road.highway',elementType:'geometry.fill',stylers:[{color:'#164F3B'}]},
-  {featureType:'road.highway',elementType:'geometry.stroke',stylers:[{color:'#164F3B'}]},
-  {featureType:'road.arterial',elementType:'geometry.fill',stylers:[{color:'#164F3B'}]},
-  {featureType:'water',elementType:'geometry',stylers:[{color:'#B6C8C1'}]},
-  {featureType:'water',elementType:'labels.text',stylers:[{visibility:'off'}]},
+  {featureType:'road',elementType:'geometry.fill',stylers:[{color:'#34313A'},{weight:1.4}]},
+  {featureType:'road',elementType:'geometry.stroke',stylers:[{visibility:'off'}]},
+  {featureType:'road.local',elementType:'geometry.fill',stylers:[{color:'#555059'},{weight:.7}]},
+  {featureType:'road.highway',elementType:'geometry.fill',stylers:[{color:'#1D1C22'},{weight:3.8}]},
+  {featureType:'road.arterial',elementType:'geometry.fill',stylers:[{color:'#1D1C22'},{weight:2.8}]},
+  {featureType:'water',elementType:'geometry',stylers:[{color:'#9BC9E8'}]},
 ];
 export function mapOptions(mapId='') {
   return {center:{lat:37.573,lng:126.987},zoom:14,mapTypeId:'roadmap',
     mapTypeControl:false,streetViewControl:false,fullscreenControl:false,clickableIcons:true,
-    ...(mapId.trim()?{mapId:mapId.trim()}:{styles:greenMapStyles})};
+    ...(mapId.trim()?{mapId:mapId.trim()}:{styles:watercolorMapStyles})};
 }
 
 // Screen-space chevrons, independent of Google APIs and route fetching.

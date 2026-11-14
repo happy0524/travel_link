@@ -119,7 +119,9 @@ PORT=5173
 
 ## Google API 요청 효율 개선
 
-지도는 녹색 도시 도식과 흰 일정 경로를 사용합니다. Map ID가 없으면 embedded 스타일을 적용하고, `GOOGLE_MAPS_MAP_ID`가 설정되면 Cloud 스타일로 전환합니다. [지도 스타일·Cloud 설정·검증 결과](MAP_STYLE_REVIEW.md)를 확인하세요.
+현재 지도 디자인은 Map 3 기반 Watercolor City Map입니다. [구현·Cloud Map ID 적용·검증 안내](WATERCOLOR_MAP_REVIEW.md)를 확인하세요. Leaf Node 버전은 `checkpoint/leaf-node`에 보존되어 있습니다.
+
+Map ID가 없으면 수채화 아틀라스 embedded 스타일을 적용합니다. `GOOGLE_MAPS_MAP_ID`가 설정되어 있으면 연결된 Cloud 스타일도 갱신해야 합니다. Leaf Node의 이전 구현 기록은 [지도 스타일 검토 기록](MAP_STYLE_REVIEW.md)에 남아 있습니다.
 
 현재 일정의 유효한 구간 결과 재사용, 진행 중 요청 공유, 편집 250ms 디바운스와 선택한 장소만 시간대 확인하는 흐름을 적용했습니다. 검색은 기존 버튼/Enter 제출 방식이며 반복 제출을 350ms로 합칩니다.
 

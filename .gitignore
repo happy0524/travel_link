@@ -4,3 +4,7 @@ node_modules/
 *.log
 test-results/
 
+# Local visual design references
+design-references/*
+!design-references/README.md
+
