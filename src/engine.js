@@ -40,7 +40,7 @@ export async function resolveRoute(provider,args) {
     return {...r,mode:args.mode};
   } catch(e) {if(e.name==='AbortError')throw e;return {status:'error',message:'경로 확인 필요 · 요청 실패',mode:args.mode};}
 }
-export async function calculate({visits,segments,date,time,provider,signal}) {
+export async function calculate({visits,segments,date,time,provider,signal,reason='schedule'}) {
   let arrival=wallStart(date,time);
   const rows=[],routes={};
   for(let i=0;i<visits.length;i++){
@@ -50,7 +50,8 @@ export async function calculate({visits,segments,date,time,provider,signal}) {
     rows.push({...v,arrival,departure,...h});
     if(i<visits.length-1){
       const key=segmentKey(v,visits[i+1]);
-      const r=Number.isFinite(departure)?await resolveRoute(provider,{from:v.place,to:visits[i+1].place,mode:segments[key].mode,departure,signal}):{status:'unknown',message:'앞선 경로 확인 필요'};
+      const r=Number.isFinite(departure)?await resolveRoute(provider,{from:v.place,to:visits[i+1].place,mode:segments[key].mode,departure,signal,reason}):{status:'unknown',message:'앞선 경로 확인 필요'};
+      if(signal?.aborted)throw new DOMException('Aborted','AbortError');
       routes[key]=r;
       arrival=r.status==='ok'&&Number.isFinite(r.minutes)&&Number.isFinite(departure)?departure+r.minutes:null;
     }

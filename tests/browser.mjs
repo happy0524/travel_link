@@ -1,7 +1,9 @@
+const baseURL=process.env.TEST_BASE_URL||'http://127.0.0.1:5173';
 import {chromium} from 'playwright';
 import assert from 'node:assert/strict';
 import {mkdir} from 'node:fs/promises';
 import {verifyChanges} from './browser-changes.mjs';
+import {measureRequests,verifyLiveFailures} from './browser-efficiency.mjs';
 await mkdir('test-results',{recursive:true});
 const browser=await chromium.launch({channel:'msedge',headless:true});
 const page=await browser.newPage({viewport:{width:1440,height:1200}});
@@ -9,7 +11,7 @@ const errors=[];page.on('pageerror',e=>errors.push(e.message));
 const settled=()=>page.waitForFunction(()=>!document.querySelector('#summary').textContent.includes('계산하고'));
 const check=async(name,fn)=>{await fn();console.log('PASS '+name);};
 try{
-await page.goto('http://127.0.0.1:5173');
+await page.goto(baseURL);
 await settled();
 await check('initial demo renders four visits and three directed edges',async()=>{
  assert.equal(await page.locator('.visit').count(),4);assert.equal(await page.locator('.map-edge').count(),3);
@@ -105,15 +107,17 @@ await check('keyless integration explains setup and preserves demo',async()=>{
  assert.equal(await page.locator('#map').isVisible(),true);
 });
 await check('server protects credentials and missing key fails visibly',async()=>{
- assert.equal((await page.request.get('http://127.0.0.1:5173/.env')).status(),404);
- assert.equal((await page.request.get('http://127.0.0.1:5173/server.mjs')).status(),404);
- assert.equal((await page.request.post('http://127.0.0.1:5173/api/route',{data:{}})).status(),503);
+ assert.equal((await page.request.get(baseURL+'/.env')).status(),404);
+ assert.equal((await page.request.get(baseURL+'/server.mjs')).status(),404);
+ assert.equal((await page.request.post(baseURL+'/api/route',{data:{}})).status(),503);
 });
 await page.locator('#sample').click();await page.locator('#time').fill('09:00');await page.locator('#time').press('Tab');await settled();
 await page.locator('#fit').click();await page.screenshot({path:'test-results/demo-desktop.png',fullPage:true});
 await page.setViewportSize({width:390,height:844});await page.screenshot({path:'test-results/demo-mobile.png',fullPage:true});
 assert.deepEqual(errors,[]);
 await verifyChanges(browser);
+await measureRequests(browser,baseURL);
+await verifyLiveFailures(browser,baseURL);
 console.log('All browser checks passed. No JavaScript errors.');
 }finally{await browser.close();}
 

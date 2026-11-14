@@ -1,3 +1,4 @@
+const baseURL=process.env.TEST_BASE_URL||'http://127.0.0.1:5173';
 import assert from 'node:assert/strict';
 import {mockGoogle} from './google-fixture.mjs';
 
@@ -10,7 +11,7 @@ export async function verifyChanges(browser){
  const difference=delta=>delta===0?'변화 없음':Math.abs(delta)+'분 '+(delta<0?'단축':'증가');
  const search=async text=>{await page.locator('#search').fill(text);await page.locator('.result').first().click();};
  try{
- await page.goto('http://127.0.0.1:5173');await settled();
+ await page.goto(baseURL);await settled();
  await page.locator('#date').fill('2026-09-14');await page.locator('#date').press('Tab');await settled();
  await check('compact cards retain readable controls and fit more destinations vertically',async()=>{
    const sizes=await page.locator('.visit').evaluateAll(cards=>cards.map(c=>({height:c.getBoundingClientRect().height,warning:!!c.querySelector('.warning')})));
@@ -80,10 +81,10 @@ export async function verifyChanges(browser){
    await search('N서울타워');
    await page.locator('#add').evaluate(e=>{const add=e.onclick;for(let i=0;i<5;i++)add();});await settled();
    assert.equal(await page.locator('.visit').count(),5);assert.equal(await page.locator('.map-node').count(),5);
-   assert.equal(await page.evaluate(()=>window.demoCalls),4);
+   assert.equal(await page.evaluate(()=>window.demoCalls),1);
    const ids=await page.locator('.map-edge').evaluateAll(e=>e.map(x=>x.dataset.edge));
    await page.locator('#add').click();await settled();
-   assert.equal(await page.evaluate(()=>window.demoCalls),4);
+   assert.equal(await page.evaluate(()=>window.demoCalls),1);
    assert.deepEqual(await page.locator('.map-edge').evaluateAll(e=>e.map(x=>x.dataset.edge)),ids);
    assert.match(await page.locator('#add').innerText(),/이미 추가됨/);
  });
@@ -139,7 +140,7 @@ async function verifyLive(browser){
  const settled=()=>page.waitForFunction(()=>document.querySelector('#summary').getAttribute('aria-busy')==='false');
  const search=async query=>{await page.locator('#search').fill(query);await page.locator('#search-form').evaluate(e=>e.requestSubmit());await page.locator('.result').first().waitFor();};
  try{
- await page.goto('http://127.0.0.1:5173');await settled();await page.locator('#service').click();await settled();
+ await page.goto(baseURL);await settled();await page.locator('#service').click();await settled();
  assert.equal(await page.locator('#source-badge').innerText(),'GOOGLE / LIVE');
  for(let n=1;n<=3;n++){
    await search('original');await page.locator('[data-result="ChIJ-stable-'+n+'"]').click();await page.locator('#add').click();await settled();

@@ -2,12 +2,28 @@ import {places,defaults,modes} from './data.js';
 import {calculate,reconcile,segmentKey,stamp} from './engine.js';
 import {DemoProvider,LiveProvider} from './providers.js';
 import {findDestination,summarize,ReorderComparison} from './itinerary.js';
+import {EfficientRouteProvider,PlacesProvider,loadGoogleMaps} from './efficient-providers.js';
+import {requestConfig} from './request-config.js';
+import {createMonitor,debounce} from './requests.js';
 const $=s=>document.querySelector(s);
 const esc=s=>String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 let visits=[],segments={},result={rows:[],routes:{}},selected=null,selectedPlace=null,edge=null,loading=false;
 let controller,revision=0,view=[0,0,1000,800],dragId=null,live=false,gmap=null,overlay=null,config={},searchRevision=0,livePlaces=[];
 const comparison=new ReorderComparison();
 let comparisonTimer;
+const monitor=createMonitor(requestConfig.instrumentation);
+const placesProvider=new PlacesProvider({monitor});
+const liveProvider=new EfficientRouteProvider(new LiveProvider(),{monitor});
+let demoProvider,demoScenario,placeRevision=0,placeController,searchController;
+const delayedCalculation=debounce(runCalculation,requestConfig.editDebounceMs);
+const delayedSearch=debounce(()=>searchPlaces('search-submit'),requestConfig.searchDebounceMs);
+function provider(){
+ if(live)return liveProvider;
+ const scenario=$('#scenario').value;
+ if(!demoProvider||demoScenario!==scenario){demoProvider?.pool.clear();demoScenario=scenario;demoProvider=new EfficientRouteProvider(new DemoProvider(scenario));}
+ return demoProvider;
+}
+function retainPlaces(){placesProvider.retain([...livePlaces,...visits.map(v=>v.place),...(selectedPlace?[selectedPlace]:[])]);}
 const dateParts=new Intl.DateTimeFormat('en-CA',{timeZone:'Asia/Seoul',year:'numeric',month:'2-digit',day:'2-digit'}).formatToParts(new Date());
 const dp=Object.fromEntries(dateParts.map(p=>[p.type,p.value]));
 $('#date').value=dp.year+'-'+dp.month+'-'+dp.day;
@@ -43,15 +59,22 @@ function reorder(id,targetIndex){
  if(oldZone!==zone())toast('시간대가 '+zone()+'로 변경되었습니다. 입력한 날짜와 시간은 현지 시각으로 유지합니다.');
  refresh('reorder');
 }
-async function refresh(reason='edit'){
+function refresh(reason='edit'){
+ delayedCalculation.cancel();
  controller?.abort();controller=new AbortController();const rev=++revision;
  const comparisonRevision=comparison.begin(reason);clearTimeout(comparisonTimer);
  segments=reconcile(visits,segments);if(edge&&!segments[edge])edge=null;
  result={rows:[],routes:{}};loading=true;render();
  if(!$('#date').value||!$('#time').value){loading=false;finishComparison(comparisonRevision);render();toast('여행 날짜와 출발 시간을 입력하세요.');return;}
+ const p=provider();p.setActive(visits,segments);retainPlaces();
+ const args={reason,rev,comparisonRevision,signal:controller.signal,provider:p};
+ if(['stay','wait','date','time','mode'].includes(reason))delayedCalculation(args);else runCalculation(args);
+}
+async function runCalculation({reason,rev,comparisonRevision,signal,provider}){
+ if(rev!==revision)return;
  try{
- const fresh=await calculate({visits:structuredClone(visits),segments:structuredClone(segments),date:$('#date').value,time:$('#time').value,provider:live?new LiveProvider():new DemoProvider($('#scenario').value),signal:controller.signal});
- if(rev!==revision)return;result=fresh;loading=false;finishComparison(comparisonRevision);render();
+ const fresh=await calculate({visits:structuredClone(visits),segments:structuredClone(segments),date:$('#date').value,time:$('#time').value,provider,signal,reason});
+ if(rev!==revision){monitor.record({api:'route',reason,id:'itinerary',status:'stale-discarded'});return;}result=fresh;loading=false;finishComparison(comparisonRevision);render();
  }catch(e){if(e.name!=='AbortError'&&rev===revision){loading=false;finishComparison(comparisonRevision);render();toast('일정 계산 중 오류가 발생했습니다. 다시 편집해 주세요.');}}
 }
 function finishComparison(token){
@@ -102,26 +125,37 @@ function render(){
  }
 }
 function selectVisit(id,fromMap=false){
+ placeRevision++;placeController?.abort();
  selected=id;edge=null;const v=visits.find(v=>v.id===id);if(!v)return;
  selectedPlace=v.place;render();renderDetails();
  if(fromMap)document.querySelector('[data-visit="'+id+'"]')?.scrollIntoView({block:'nearest',behavior:'smooth'});
  else focusPlace(v.place);
 }
-function selectPlace(p){selectedPlace=p;renderDetails();}
+async function selectPlace(p){
+ const token=++placeRevision;placeController?.abort();placeController=new AbortController();
+ if(!live){selectedPlace=p;renderDetails();return;}
+ const existing=findDestination(visits,p);if(existing){revealExisting(existing);return;}
+ selectedPlace=null;renderDetails();placesProvider.retain([...livePlaces,...visits.map(v=>v.place),p]);
+ try{
+   const detail=await placesProvider.inspect(p,{signal:placeController.signal});
+   if(token!==placeRevision){monitor.record({api:'place-detail',reason:'place-selection',id:p.id,status:'stale-discarded'});return;}
+   selectedPlace=detail;renderDetails();retainPlaces();
+ }catch(e){if(e.name!=='AbortError'&&token===placeRevision)toast('장소 정보 또는 시간대를 확인하지 못해 추가할 수 없습니다. 다시 선택하세요.');}
+}
 function renderDetails(){
  const panel=$('#details');panel.hidden=!selectedPlace;if(!selectedPlace)return;
  const p=selectedPlace;const day=$('#date').value?new Date($('#date').value+'T00:00:00Z').getUTCDay():0;
  const clock=m=>(m>=1440?'다음 날 ':'')+String(Math.floor((m%1440)/60)).padStart(2,'0')+':'+String(m%60).padStart(2,'0');
  const hrs=p.hours?(p.hours[day]||[]).map(([a,b])=>clock(a)+' – '+clock(b)).join('<br>')||'휴무':'운영시간 정보 없음';
- panel.innerHTML='<button class="close" id="close-details" aria-label="장소 정보 닫기">×</button>'+(p.photo?'<img class="place-photo" src="'+esc(p.photo)+'" alt="'+esc(p.name)+' 사진">':'<div class="place-art"><span>'+esc(p.symbol||'⌖')+'</span><small>사진 없음 · 장소 기호</small></div>')+'<div class="details-body"><span class="eyebrow">'+esc(p.category)+'</span><h2>'+esc(p.name)+'</h2><p class="address">⌖ '+esc(p.address)+'</p><p>'+esc(p.description||'Google Places에서 제공한 장소입니다.')+'</p>'+(p.authors?'<p>'+p.authors.map(a=>'<a rel="noopener noreferrer" target="_blank" href="'+esc(a.uri||'https://maps.google.com')+'">'+esc(a.displayName)+'</a>').join(', ')+'</p>':'')+'<div class="hours"><strong>선택 요일의 운영시간</strong><br>'+hrs+'<p>'+esc(p.hoursLabel)+'<br>공휴일·특정 날짜의 영업은 방문 전 확인하세요.</p></div><button class="primary" id="add">＋ 일정에 추가</button></div>';
- $('#close-details').onclick=()=>{selectedPlace=null;renderDetails();};$('#add').onclick=()=>add(p);updateAddAction();
+ panel.innerHTML='<button class="close" id="close-details" aria-label="장소 정보 닫기">×</button>'+(p.photo?'<img class="place-photo" src="'+esc(p.photo)+'" alt="'+esc(p.name)+' 사진">':'<div class="place-art"><span>'+esc(p.symbol||'⌖')+'</span><small>사진 없음 · 장소 기호</small></div>')+'<div class="details-body"><span class="eyebrow">'+esc(p.category)+'</span><h2>'+esc(p.name)+'</h2><p class="address">⌖ '+esc(p.address)+'</p><p>'+esc(p.description||'Google Places에서 제공한 장소입니다.')+'</p>'+(p.attributions?.length?'<p>'+p.attributions.map(a=>'<a rel="noopener noreferrer" target="_blank" href="'+esc(a.providerURI||'https://maps.google.com')+'">'+esc(a.provider||'Google Maps')+'</a>').join(', ')+'</p>':'')+(p.authors?'<p>'+p.authors.map(a=>'<a rel="noopener noreferrer" target="_blank" href="'+esc(a.uri||'https://maps.google.com')+'">'+esc(a.displayName)+'</a>').join(', ')+'</p>':'')+'<div class="hours"><strong>선택 요일의 운영시간</strong><br>'+hrs+'<p>'+esc(p.hoursLabel)+'<br>공휴일·특정 날짜의 영업은 방문 전 확인하세요.</p></div><button class="primary" id="add">＋ 일정에 추가</button></div>';
+ $('#close-details').onclick=()=>{placeRevision++;placeController?.abort();selectedPlace=null;renderDetails();retainPlaces();};$('#add').onclick=()=>add(p);updateAddAction();
 }
 function renderEdge(){
  const panel=$('#edge-settings');panel.hidden=!edge||!segments[edge];if(panel.hidden)return;
  const i=visits.findIndex((v,i)=>i<visits.length-1&&segmentKey(v,visits[i+1])===edge),r=result.routes[edge];
  panel.innerHTML='<button class="close" id="close-edge" aria-label="이동 설정 닫기">×</button><h3>'+(i+1)+' → '+(i+2)+' 이동 설정</h3><div class="mode-buttons">'+Object.entries(modes).map(([key,label])=>'<button data-mode="'+key+'" class="'+(segments[edge].mode===key?'active':'')+'">'+label+'</button>').join('')+'</div><p>'+esc(loading?'계산 중…':r?.fallback?'대중교통 경로 없음이 확인되어 자동차로 전환했습니다.':r?.details||r?.message||'경로 확인 필요')+'</p><p>'+(live?'Google Routes · 지역별 지원 범위가 다릅니다.':'시연용 추정 시간 · 실제 길찾기가 아닙니다.')+'</p>';
  $('#close-edge').onclick=()=>{edge=null;renderEdge();renderMap();};
- panel.querySelectorAll('[data-mode]').forEach(b=>b.onclick=()=>{segments[edge]={mode:b.dataset.mode};refresh();});
+ panel.querySelectorAll('[data-mode]').forEach(b=>b.onclick=()=>{if(segments[edge].mode===b.dataset.mode)return;segments[edge]={mode:b.dataset.mode};refresh('mode');});
 }
 const project=p=>({x:(p.lng-126.963)*17000+50,y:(37.592-p.lat)*15000+50});
 const mapBase='<defs><pattern id="blocks" width="100" height="80" patternUnits="userSpaceOnUse" patternTransform="rotate(-12)"><rect width="100" height="80" fill="#eeece5"/><rect x="7" y="7" width="85" height="65" rx="7" fill="#e6e3dc" stroke="#f8f6ef" stroke-width="6"/></pattern></defs><rect x="-5000" y="-5000" width="10000" height="10000" fill="url(#blocks)"/><path d="M-100 155 Q170 175 220 55 Q310 -90 510 15 L570 -200 -100 -200Z" fill="#ddded3"/><path d="M180 800 Q170 570 370 610 Q500 625 590 800" fill="#dddcd0"/><path d="M-100 421 Q230 390 450 425 T1100 430" fill="none" stroke="#d1d9db" stroke-width="19"/><g fill="none" stroke="#faf8f1" stroke-width="15"><path d="M-100 333 L1100 333"/><path d="M270 -100 L260 400 90 850"/><path d="M-100 555 L1100 520"/><path d="M700 -100 L750 900"/></g><g fill="#a8a498" font-size="16" letter-spacing="5"><text x="540" y="230">종로구</text><text x="555" y="565">중구</text><text x="295" y="690">남산</text><text x="560" y="410" font-size="11">청계천</text></g>';
@@ -193,58 +227,50 @@ $('#visits').onclick=e=>{
  else if(!e.target.closest('input,label,button')){const card=e.target.closest('[data-visit]');if(card)selectVisit(card.dataset.visit);}
 };
 $('#visits').onkeydown=e=>{if(e.target.matches('article')&&(e.key==='Enter'||e.key===' ')){e.preventDefault();selectVisit(e.target.dataset.visit);}};
-$('#visits').onchange=e=>{
+function editVisit(e){
  const v=visits.find(v=>v.id===(e.target.dataset.stay||e.target.dataset.wait));if(!v)return;
- if(e.target.dataset.stay)v.stay=Math.max(0,Math.min(1440,Math.round(Number(e.target.value)||0)));else v.wait=e.target.checked;
- refresh();
-};
+ if(e.target.dataset.stay){const stay=Math.max(0,Math.min(1440,Math.round(Number(e.target.value)||0)));if(v.stay===stay)return;v.stay=stay;}else{if(v.wait===e.target.checked)return;v.wait=e.target.checked;}
+ refresh(e.target.dataset.stay?'stay':'wait');
+}
+$('#visits').oninput=editVisit;$('#visits').onchange=editVisit;
 $('#visits').ondragstart=e=>{if(e.target.closest('input,button')){e.preventDefault();return;}const card=e.target.closest('[data-visit]');if(!card)return;dragId=card.dataset.visit;e.dataTransfer.setData('text/plain',dragId);e.dataTransfer.effectAllowed='move';card.classList.add('dragging');};
 $('#visits').ondragover=e=>{const c=e.target.closest('[data-visit]');if(c){e.preventDefault();c.classList.add('drag-over');}};
 $('#visits').ondragleave=e=>e.target.closest('[data-visit]')?.classList.remove('drag-over');
 $('#visits').ondrop=e=>{e.preventDefault();const card=e.target.closest('[data-visit]');if(card)reorder(dragId||e.dataTransfer.getData('text/plain'),visits.findIndex(v=>v.id===card.dataset.visit));dragId=null;};
 $('#visits').ondragend=()=>{dragId=null;document.querySelectorAll('.dragging,.drag-over').forEach(e=>e.classList.remove('dragging','drag-over'));};
 $('#sample').onclick=sample;$('#scenario').onchange=refresh;
-$('#date').onchange=()=>{refresh();renderDetails();};$('#time').onchange=refresh;
+$('#date').onchange=()=>{refresh('date');renderDetails();};$('#time').onchange=()=>refresh('time');
+$('#date').oninput=$('#date').onchange;$('#time').oninput=$('#time').onchange;
 function showResults(list){$('#results').innerHTML=list.length?list.map(p=>'<button type="button" class="result" data-result="'+esc(p.id)+'">'+esc(p.name)+'<small>'+esc(p.address)+'</small></button>').join(''):'<div class="result">검색 결과가 없습니다.</div>';$('#results').querySelectorAll('[data-result]').forEach(b=>b.onclick=()=>{const place=list.find(p=>p.id===b.dataset.result);const existing=findDestination(visits,place);if(existing)revealExisting(existing);else selectPlace(place);$('#results').innerHTML='';});}
-$('#search').oninput=()=>{if(!live){const q=$('#search').value.trim();showResults(places.filter(p=>(p.name+p.address+p.category).includes(q)));}};
+// Keep the existing explicit-submit search UX: typing never spends Google quota.
+// Debounce repeated submits, invalidate older results as soon as input changes.
+$('#search').oninput=()=>{
+ if(!live){const q=$('#search').value.trim();showResults(places.filter(p=>(p.name+p.address+p.category).includes(q)));return;}
+ delayedSearch.cancel();searchRevision++;searchController?.abort();$('#results').innerHTML='';
+};
 $('#search').onfocus=()=>{if(!live)$('#search').oninput();};
 document.addEventListener('click',e=>{if(!e.target.closest('#search-form'))$('#results').innerHTML='';});
-$('#search-form').onsubmit=async e=>{
+$('#search-form').onsubmit=e=>{
  e.preventDefault();if(!live){$('#search').oninput();return;}
- const rev=++searchRevision;$('#results').textContent='Google Places 검색 중…';
- try{
- const {Place}=await google.maps.importLibrary('places');
- const response=await Place.searchByText({textQuery:$('#search').value,fields:['id','displayName','formattedAddress','location','regularOpeningHours','photos'],maxResultCount:8});
- if(rev!==searchRevision)return;
- livePlaces=await Promise.all(response.places.map(normalizePlace));if(rev!==searchRevision)return;showResults(livePlaces);renderMap();
- }catch{if(rev===searchRevision)$('#results').textContent='장소 검색 실패 · API 설정과 지역별 지원을 확인하세요.';}
+ if([...$('#search').value.trim()].length<requestConfig.minSearchLength){delayedSearch.cancel();$('#results').textContent='검색어를 2자 이상 입력하세요.';return;}
+ delayedSearch();
 };
-async function normalizePlace(p){
- const lat=p.location.lat(),lng=p.location.lng();let tz=null;
- try{const r=await fetch('/api/timezone?lat='+lat+'&lng='+lng);const j=await r.json();if(r.ok)tz=j.zone;}catch{}
- let hours=null;
- if(p.regularOpeningHours?.periods){
- hours=Object.fromEntries(Array.from({length:7},(_,d)=>[d,[]]));
- for(const period of p.regularOpeningHours.periods){
- const o=period.open,c=period.close;if(!o)continue;
- if(!c){for(let d=0;d<7;d++)hours[d]=[[0,1440]];break;}
- const start=o.hour*60+o.minute,end=((c.day-o.day+7)%7)*1440+c.hour*60+c.minute;
- hours[o.day].push([start,end<=start?end+1440:end]);
- }
- for(const list of Object.values(hours))list.sort((a,b)=>a[0]-b[0]);
- }
- return {id:p.id,name:p.displayName,address:p.formattedAddress,lat,lng,zone:tz,hours,hoursLabel:'Google 제공 정기 주간 영업시간 · 날짜별 확정 정보 아님',category:'Google Places',source:'live',photo:p.photos?.[0]?.getURI({maxWidth:500}),authors:p.photos?.[0]?.authorAttributions};
+async function searchPlaces(reason){
+ const rev=++searchRevision;searchController?.abort();searchController=new AbortController();
+ $('#results').textContent='Google Places 검색 중…';
+ try{
+   const list=await placesProvider.search($('#search').value,{signal:searchController.signal,reason});
+   if(rev!==searchRevision){monitor.record({api:'places-search',reason,id:'current-query',status:'stale-discarded'});return;}
+   livePlaces=list;retainPlaces();showResults(livePlaces);renderMap();
+ }catch(e){if(e.name!=='AbortError'&&rev===searchRevision)$('#results').textContent='장소 검색 실패 · API 설정과 지역별 지원을 확인하세요.';}
 }
 $('#service').onclick=async()=>{
  if(live){location.reload();return;}
  if(!config.browserKey){toast('Google API 키가 없습니다. .env에 브라우저 키와 서버 키를 설정한 뒤 재시작하세요. 현재 데모의 모든 편집 기능은 사용 가능합니다.');return;}
  try{
  $('#service').disabled=true;
- await new Promise((resolve,reject)=>{
- if(window.google?.maps){resolve();return;}
- window.initGoogle=resolve;window.gm_authFailure=()=>{reject(new Error('auth'));toast('Google 지도 인증 실패 · 데모로 돌아가려면 새로고침하세요.');};
- const script=document.createElement('script');script.src='https://maps.googleapis.com/maps/api/js?key='+encodeURIComponent(config.browserKey)+'&v=weekly&loading=async&callback=initGoogle&language=ko';script.onerror=reject;document.head.append(script);setTimeout(()=>reject(new Error('timeout')),15000);
- });
+ await loadGoogleMaps(config.browserKey,{monitor});
+ window.gm_authFailure=()=>toast('Google 지도 인증 실패 · 데모로 돌아가려면 새로고침하세요.');
  live=true;visits=[];segments={};selected=null;selectedPlace=null;$('#details').hidden=true;
  $('#map').style.display='none';$('#google-map').style.display='block';
  gmap=new google.maps.Map($('#google-map'),{center:{lat:37.573,lng:126.987},zoom:14,mapTypeControl:false,streetViewControl:false,fullscreenControl:false,clickableIcons:true});
@@ -254,7 +280,7 @@ $('#service').onclick=async()=>{
  onRemove(){this.el?.remove();}
  }
  overlay=new ItineraryOverlay();overlay.setMap(gmap);
- gmap.addListener('click',async e=>{if(!e.placeId)return;e.stop();try{const {Place}=await google.maps.importLibrary('places');const p=new Place({id:e.placeId});await p.fetchFields({fields:['id','displayName','formattedAddress','location','regularOpeningHours','photos']});selectPlace(await normalizePlace(p));}catch{toast('장소 정보를 불러오지 못했습니다.');}});
+ gmap.addListener('click',e=>{if(!e.placeId)return;e.stop();const existing=visits.find(v=>v.place.id===e.placeId);if(existing)revealExisting(existing);else selectPlace({id:e.placeId});});
  $('#source-badge').textContent='GOOGLE / LIVE';$('#service').textContent='데모로 돌아가기';$('#map-disclaimer').textContent='Google 지도 · 경로는 응답이 있는 경우만 표시';
  $('#map-caption').textContent='세계 지도를 탐색하세요. 장소·경로 지원은 지역마다 다릅니다.';
  $('#sample').disabled=true;$('#scenario').disabled=true;$('#search').value='';$('#results').innerHTML='';
@@ -262,5 +288,5 @@ $('#service').onclick=async()=>{
  }catch{toast('Google 지도를 불러오지 못했습니다. 키·결제·네트워크를 확인하세요.');}
  finally{$('#service').disabled=false;}
 };
-fetch('/api/config').then(r=>r.json()).then(c=>config=c).catch(()=>{});
+fetch('/api/config').then(r=>r.json()).then(c=>{config=c;monitor.setEnabled(c.requestMonitor===true);if(c.requestMonitor)window.travelLinkRequests=monitor;}).catch(()=>{});
 sample();
