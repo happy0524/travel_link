@@ -6,7 +6,9 @@ import {measureRequests} from './browser-efficiency.mjs';
 
 // Materialize the committed implementation without touching the user's files.
 const baseline=path.resolve('test-results/baseline');await mkdir(path.join(baseline,'src'),{recursive:true});
-for(const name of ['package.json','index.html','server.mjs','src/app.js','src/data.js','src/styles.css','src/providers.js','src/engine.js','src/itinerary.js']){
+const baselineFiles=execFileSync('git',['ls-tree','-r','--name-only','HEAD'],{encoding:'utf8'}).trim().split(/\r?\n/)
+ .filter(name=>['package.json','index.html','server.mjs'].includes(name)||name.startsWith('src/'));
+for(const name of baselineFiles){
  await writeFile(path.join(baseline,name),execFileSync('git',['show','HEAD:'+name]));
 }
 async function start(cwd,port){

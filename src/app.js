@@ -5,6 +5,8 @@ import {findDestination,summarize,ReorderComparison} from './itinerary.js';
 import {EfficientRouteProvider,PlacesProvider,loadGoogleMaps} from './efficient-providers.js';
 import {requestConfig} from './request-config.js';
 import {createMonitor,debounce} from './requests.js';
+import {mapOptions,routeArrows} from './map-style.js';
+import {inkRoute,inkNode} from './map-ink.js';
 const $=s=>document.querySelector(s);
 const esc=s=>String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 let visits=[],segments={},result={rows:[],routes:{}},selected=null,selectedPlace=null,edge=null,loading=false;
@@ -158,22 +160,27 @@ function renderEdge(){
  panel.querySelectorAll('[data-mode]').forEach(b=>b.onclick=()=>{if(segments[edge].mode===b.dataset.mode)return;segments[edge]={mode:b.dataset.mode};refresh('mode');});
 }
 const project=p=>({x:(p.lng-126.963)*17000+50,y:(37.592-p.lat)*15000+50});
-const mapBase='<defs><pattern id="blocks" width="100" height="80" patternUnits="userSpaceOnUse" patternTransform="rotate(-12)"><rect width="100" height="80" fill="#eeece5"/><rect x="7" y="7" width="85" height="65" rx="7" fill="#e6e3dc" stroke="#f8f6ef" stroke-width="6"/></pattern></defs><rect x="-5000" y="-5000" width="10000" height="10000" fill="url(#blocks)"/><path d="M-100 155 Q170 175 220 55 Q310 -90 510 15 L570 -200 -100 -200Z" fill="#ddded3"/><path d="M180 800 Q170 570 370 610 Q500 625 590 800" fill="#dddcd0"/><path d="M-100 421 Q230 390 450 425 T1100 430" fill="none" stroke="#d1d9db" stroke-width="19"/><g fill="none" stroke="#faf8f1" stroke-width="15"><path d="M-100 333 L1100 333"/><path d="M270 -100 L260 400 90 850"/><path d="M-100 555 L1100 520"/><path d="M700 -100 L750 900"/></g><g fill="#a8a498" font-size="16" letter-spacing="5"><text x="540" y="230">종로구</text><text x="555" y="565">중구</text><text x="295" y="690">남산</text><text x="560" y="410" font-size="11">청계천</text></g>';
+const mapBase='<defs><pattern id="blocks" width="100" height="80" patternUnits="userSpaceOnUse" patternTransform="rotate(-12)"><rect width="100" height="80" fill="#C8D4CB"/><rect x="7" y="7" width="85" height="65" rx="7" fill="#B4C2B8" stroke="#789282" stroke-width="6"/></pattern></defs><rect x="-5000" y="-5000" width="10000" height="10000" fill="url(#blocks)"/><path d="M-100 155 Q170 175 220 55 Q310 -90 510 15 L570 -200 -100 -200Z" fill="#4D775F"/><path d="M180 800 Q170 570 370 610 Q500 625 590 800" fill="#4D775F"/><path d="M-100 421 Q230 390 450 425 T1100 430" fill="none" stroke="#B6C8C1" stroke-width="19"/><g fill="none" stroke="#164F3B" stroke-width="15"><path d="M-100 333 L1100 333"/><path d="M270 -100 L260 400 90 850"/><path d="M-100 555 L1100 520"/><path d="M700 -100 L750 900"/></g><g fill="#143B2C" font-size="16" letter-spacing="5"><text x="540" y="230">종로구</text><text x="555" y="565">중구</text><text x="295" y="690">남산</text><text x="560" y="410" font-size="11">청계천</text></g>';
 function decode(encoded){let index=0,lat=0,lng=0,points=[];while(index<encoded.length){const read=()=>{let b,shift=0,n=0;do{b=encoded.charCodeAt(index++)-63;n|=(b&31)<<shift;shift+=5;}while(b>=32);return n&1?~(n>>1):n>>1;};lat+=read();lng+=read();points.push({lat:lat/1e5,lng:lng/1e5});}return points;}
 function graphics(proj,isLive=false){
  const unit=isLive?1:Math.max(view[2]/$('#map').clientWidth,view[3]/$('#map').clientHeight);
  const locations=visits.map(v=>proj(v.place));
  const offsets=visits.map((v,i)=>{const same=visits.map((x,j)=>x.place.lat===v.place.lat&&x.place.lng===v.place.lng?j:-1).filter(j=>j>=0);const n=same.indexOf(i);return {x:locations[i].x+(same.length>1?(n-(same.length-1)/2)*40*unit:0),y:locations[i].y};});
- let out='<defs><marker id="arrow" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="5" markerHeight="5" orient="auto-start-reverse"><path d="M 0 0 L 10 5 L 0 10 z" fill="#8274c9"/></marker></defs>';
+ let out='';const casings=[],lines=[],arrows=[],edgeLabels=[];
  visits.slice(0,-1).forEach((v,i)=>{
  const k=segmentKey(v,visits[i+1]),r=result.routes[k],a=offsets[i],b=offsets[i+1];
- let d;
- if(isLive){if(!r?.polyline)return;d=decode(r.polyline).map((p,j)=>{const q=proj(p);return (j?'L':'M')+q.x+','+q.y;}).join(' ');}
- else {const dx=b.x-a.x,dy=b.y-a.y,len=Math.hypot(dx,dy)||1,start=Math.min(24*unit,len/3),end=Math.min(26*unit,len/3);d='M'+(a.x+dx/len*start)+','+(a.y+dy/len*start)+' L'+(b.x-dx/len*end)+','+(b.y-dy/len*end);}
- out+='<path class="edge-hit" data-edge="'+k+'" d="'+d+'"/><path class="map-edge '+(edge===k?'active':'')+'" data-edge="'+k+'" d="'+d+'" marker-end="url(#arrow)" tabindex="0" role="button" aria-label="'+(i+1)+'에서 '+(i+2)+' 이동 설정"><title>'+esc(modes[r?.mode||segments[k].mode])+' · '+(r?.status==='ok'?r.minutes+'분':'경로 확인 필요')+'</title></path>';
- if(edge===k)out+='<text x="'+((a.x+b.x)/2)+'" y="'+((a.y+b.y)/2-12)+'" class="node-time">'+esc(modes[r?.mode||segments[k].mode])+' '+(r?.status==='ok'?r.minutes+'분':'확인 필요')+'</text>';
+ let d,points;
+ if(isLive){if(!r?.polyline)return;points=decode(r.polyline).map(proj);d=points.map((q,j)=>(j?'L':'M')+q.x+','+q.y).join(' ');}
+ else {const dx=b.x-a.x,dy=b.y-a.y,len=Math.hypot(dx,dy)||1,start=Math.min(24*unit,len/3),end=Math.min(26*unit,len/3);points=[{x:a.x+dx/len*start,y:a.y+dy/len*start},{x:b.x-dx/len*end,y:b.y-dy/len*end}];d=points.map((q,j)=>(j?'L':'M')+q.x+','+q.y).join(' ');}
+ const active=edge===k?' active':'';
+ casings.push('<path class="route-casing'+active+'" d="'+d+'"/>');
+ lines.push('<path class="edge-hit" data-edge="'+k+'" d="'+d+'"/><path class="map-edge'+active+'" data-edge="'+k+'" d="'+inkRoute(points,k,unit)+'" tabindex="0" role="button" aria-label="'+(i+1)+'에서 '+(i+2)+' 이동 설정"><title>'+esc(modes[r?.mode||segments[k].mode])+' · '+(r?.status==='ok'?r.minutes+'분':'경로 확인 필요')+'</title></path><path class="route-overprint" d="'+inkRoute(points,k,unit,true)+'"/>');
+ const arrowPath=routeArrows(points,unit,k);
+ arrows.push('<g class="route-arrows"><path class="arrow-casing" d="'+arrowPath+'"/><path class="arrow-white" d="'+arrowPath+'"/></g>');
+ if(edge===k)edgeLabels.push('<text x="'+((a.x+b.x)/2)+'" y="'+((a.y+b.y)/2-12)+'" class="node-time">'+esc(modes[r?.mode||segments[k].mode])+' '+(r?.status==='ok'?r.minutes+'분':'확인 필요')+'</text>');
  });
- (isLive?livePlaces:places).filter(p=>!visits.some(v=>v.place.id===p.id)).forEach(p=>{const q=proj(p);out+='<g class="map-place" data-place="'+esc(p.id)+'" tabindex="0" role="button" aria-label="'+esc(p.name)+' 정보" transform="translate('+q.x+','+q.y+')"><circle r="7" fill="#fff" stroke="#a7a298" stroke-width="2"/><text class="node-title" x="13" y="4" style="font-size:11px;font-weight:400">'+esc(p.name)+'</text></g>';});
+ out+=casings.join('')+lines.join('')+arrows.join('')+edgeLabels.join('');
+ (isLive?livePlaces:places).filter(p=>!visits.some(v=>v.place.id===p.id)).forEach(p=>{const q=proj(p);out+='<g class="map-place" data-place="'+esc(p.id)+'" tabindex="0" role="button" aria-label="'+esc(p.name)+' 정보" transform="translate('+q.x+','+q.y+')"><circle r="7" fill="#fff" stroke="#789282" stroke-width="2"/><text class="node-title" x="13" y="4" style="font-size:11px;font-weight:400">'+esc(p.name)+'</text></g>';});
  // Lay out the selected label first, then reserve its arrival line before other labels.
  const priority=visits.map((v,i)=>i).sort((a,b)=>(visits[b].id===selected?1:0)-(visits[a].id===selected?1:0));
  const occupied=offsets.map(q=>({x:q.x/unit-20,y:q.y/unit-20,w:40,h:40}));
@@ -189,10 +196,10 @@ function graphics(proj,isLive=false){
  });
  priority.reverse().forEach(i=>{const v=visits[i],q=offsets[i],active=v.id===selected,label=labels[i];
  out+='<g class="map-node" data-node="'+v.id+'" tabindex="0" role="button" aria-label="'+(i+1)+'번 '+esc(v.place.name)+(i===0?' 출발점':'')+'" transform="translate('+q.x+','+q.y+') scale('+unit+')">';
- if(q.x!==locations[i].x)out+='<line x1="0" y1="0" x2="'+((locations[i].x-q.x)/unit)+'" y2="0" stroke="#8c859d"/>';
- out+='<circle r="'+(active?21:17)+'" fill="'+(active?'#6357bb':'#343640')+'" stroke="white" stroke-width="4"/><text class="node-number" text-anchor="middle" y="5" fill="white" font-size="13" font-weight="700">'+(i+1)+'</text>';
+ if(q.x!==locations[i].x)out+='<line x1="0" y1="0" x2="'+((locations[i].x-q.x)/unit)+'" y2="0" stroke="#789282"/>';
+ out+='<path class="node-outline" d="'+inkNode(v.id,active?21:17)+'" fill="#164F3B" stroke="'+(active?'#F4F1E8':'#DDE9E1')+'" stroke-width="'+(active?5:2)+'"/><circle r="'+(active?20:16)+'" fill="#164F3B" stroke="none"/><text class="node-number" text-anchor="middle" y="5" fill="white" font-size="13" font-weight="700">'+(i+1)+'</text>';
  out+='<text class="node-title" text-anchor="middle" x="'+label.x+'" y="'+label.y+'">'+esc(v.place.name)+'</text>';
- if(i===0)out+='<g class="node-start"><rect x="14" y="7" width="31" height="18" rx="5" fill="#efedf9" stroke="#8274c9"/><text x="29.5" y="20" text-anchor="middle" font-size="10" fill="#6357bb">출발</text></g>';
+ if(i===0)out+='<g class="node-start"><rect x="14" y="7" width="31" height="18" rx="5" fill="#DDE9E1" stroke="#164F3B"/><text x="29.5" y="20" text-anchor="middle" font-size="10" fill="#164F3B">출발</text></g>';
  if(active)out+='<text class="node-time" text-anchor="middle" y="39">'+esc(loading?'계산 중…':stamp(result.rows[i]?.arrival))+'</text>';
  out+='</g>';
  });return out;
@@ -273,7 +280,8 @@ $('#service').onclick=async()=>{
  window.gm_authFailure=()=>toast('Google 지도 인증 실패 · 데모로 돌아가려면 새로고침하세요.');
  live=true;visits=[];segments={};selected=null;selectedPlace=null;$('#details').hidden=true;
  $('#map').style.display='none';$('#google-map').style.display='block';
- gmap=new google.maps.Map($('#google-map'),{center:{lat:37.573,lng:126.987},zoom:14,mapTypeControl:false,streetViewControl:false,fullscreenControl:false,clickableIcons:true});
+ gmap=new google.maps.Map($('#google-map'),mapOptions(config.mapId));
+ $('.map-area').classList.add('live-map');
  class ItineraryOverlay extends google.maps.OverlayView{
  onAdd(){this.el=document.createElementNS('http://www.w3.org/2000/svg','svg');Object.assign(this.el.style,{position:'absolute',left:'0',top:'0',width:'1px',height:'1px',overflow:'visible',pointerEvents:'none'});this.getPanes().overlayMouseTarget.appendChild(this.el);bindMap(this.el);}
  draw(){if(!this.el)return;const projection=this.getProjection();if(!projection)return;this.el.innerHTML=graphics(p=>projection.fromLatLngToDivPixel(new google.maps.LatLng(p.lat,p.lng)),true);}

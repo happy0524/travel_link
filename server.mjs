@@ -7,6 +7,7 @@ import {requestConfig} from './src/request-config.js';
 const root=fileURLToPath(new URL('.',import.meta.url));
 const browserKey=process.env.GOOGLE_MAPS_BROWSER_KEY||'',serverKey=process.env.GOOGLE_MAPS_SERVER_KEY||'';
 const port=Number(process.env.PORT||5173);
+const mapId=process.env.GOOGLE_MAPS_MAP_ID||'';
 const requestMonitor=process.env.NODE_ENV!=='production'&&(process.env.REQUEST_MONITOR==='1'||requestConfig.instrumentation);
 const monitor=createMonitor(requestMonitor);
 // Server shares simultaneous work only. No cross-session Google response cache.
@@ -20,7 +21,7 @@ const server=http.createServer(async(req,res)=>{
  res.on('close',()=>{if(!res.writableEnded)client.abort();});
  try{
  const url=new URL(req.url,'http://localhost');
- if(url.pathname==='/api/config'){json(res,200,{browserKey,serverReady:!!serverKey,requestMonitor});return;}
+ if(url.pathname==='/api/config'){json(res,200,{browserKey,mapId,serverReady:!!serverKey,requestMonitor});return;}
  if(url.pathname==='/api/debug/requests'&&requestMonitor){json(res,200,monitor.snapshot());return;}
  if(url.pathname==='/api/timezone'){
  if(!serverKey){json(res,503,{message:'Time Zone API 서버 키 미설정'});return;}

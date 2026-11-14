@@ -93,7 +93,7 @@ export async function verifyChanges(browser){
    await page.locator('.itinerary').evaluate(e=>e.scrollTop=0);await page.locator('#add').click();
    await page.waitForFunction(id=>{const c=document.querySelector('[data-visit="'+id+'"]').getBoundingClientRect(),p=document.querySelector('.itinerary').getBoundingClientRect();return c.top>=p.top-1&&c.bottom<=p.bottom+1;},id);
    assert.equal(await page.locator('.visit.selected').getAttribute('data-visit'),id);
-   assert.equal(await page.locator('[data-node="'+id+'"] circle').getAttribute('fill'),'#6357bb');
+   assert.equal(await page.locator('[data-node="'+id+'"] circle').getAttribute('fill'),'#164F3B');
    await page.locator('[data-remove="'+id+'"]').click();await settled();
    assert.equal(await page.locator('#add').innerText(),'＋ 일정에 추가');
    await page.locator('#add').click();await settled();

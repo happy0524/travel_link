@@ -4,6 +4,7 @@ import assert from 'node:assert/strict';
 import {mkdir} from 'node:fs/promises';
 import {verifyChanges} from './browser-changes.mjs';
 import {measureRequests,verifyLiveFailures} from './browser-efficiency.mjs';
+import {verifyMapStyle} from './browser-map-style.mjs';
 await mkdir('test-results',{recursive:true});
 const browser=await chromium.launch({channel:'msedge',headless:true});
 const page=await browser.newPage({viewport:{width:1440,height:1200}});
@@ -54,7 +55,7 @@ await check('search, add new destination, and independent map/card selection',as
  await page.locator('#close-details').click();
  await page.locator('.visit').first().click();
  const selected=await page.locator('.visit.selected').getAttribute('data-visit');
- assert.equal(await page.locator('[data-node="'+selected+'"] circle').getAttribute('fill'),'#6357bb');
+ assert.equal(await page.locator('[data-node="'+selected+'"] circle').getAttribute('fill'),'#164F3B');
  await page.locator('#close-details').click();
 });
 await check('missing opening data visible when adding DDP',async()=>{
@@ -118,6 +119,7 @@ assert.deepEqual(errors,[]);
 await verifyChanges(browser);
 await measureRequests(browser,baseURL);
 await verifyLiveFailures(browser,baseURL);
+await verifyMapStyle(browser,baseURL);
 console.log('All browser checks passed. No JavaScript errors.');
 }finally{await browser.close();}
 
