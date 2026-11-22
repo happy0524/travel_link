@@ -39,13 +39,14 @@ try{
   assert.ok(await begin.evaluate(e=>{const r=e.getBoundingClientRect(),s=e.closest('.arrival-scroll').getBoundingClientRect();return r.top>=s.top&&r.bottom<=s.bottom;}));
  }
  await page.locator('#arrival-name').fill('Morgan Rivera');
- await page.route('**/api/usage/browser',route=>route.fulfill({status:429,json:{code:'API_RATE_LIMIT',message:'Too many requests. Please try again shortly.'}}));
+ const denyDestination=route=>route.fulfill({status:429,json:{code:'API_RATE_LIMIT',message:'Too many requests. Please try again shortly.'}});
+ await page.route('**/api/places/destination',denyDestination);
  await page.locator('#arrival-destination').fill('Seoul');
  await page.locator('#find-destination').click();
  await page.getByText('Too many requests. Please try again shortly.',{exact:true}).waitFor();
  assert.equal(await page.locator('#arrival-destination').inputValue(),'Seoul');
  assert.equal(await page.locator('#destination-results button').count(),0);
- await page.unroute('**/api/usage/browser');
+ await page.unroute('**/api/places/destination',denyDestination);
  assert.equal(await page.locator('#arrival-first input[type=email],#arrival-open-date,#arrival-open-time').count(),0);
  await page.locator('#arrival-destination').fill('Seoul');
  await page.locator('#find-destination').click();

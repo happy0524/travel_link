@@ -71,8 +71,6 @@ export class EfficientRouteProvider {
   }
 }
 
-export const searchFields=['id','displayName','formattedAddress','location'];
-export const detailFields=['id','displayName','formattedAddress','location','regularOpeningHours','photos','attributions'];
 export function canonicalZone(zone) {
   if(typeof zone!=='string'||!zone||/^[+-]/.test(zone))return null;
   try{return new Intl.DateTimeFormat('en',{timeZone:zone}).resolvedOptions().timeZone;}
@@ -84,12 +82,11 @@ const validZone=zone=>Boolean(canonicalZone(zone));
 export const timeZoneKey=p=>JSON.stringify([p.id||'',Number(p.lat).toFixed(8),Number(p.lng).toFixed(8)]);
 
 export class PlacesProvider {
-  constructor({library=()=>google.maps.importLibrary('places'),fetcher=(...args)=>fetch(...args),
-    permit=async()=>({}),config=requestConfig,monitor=createMonitor(),now=Date.now}={}) {
-    Object.assign(this,{library,fetcher,permit,config,monitor});
+  constructor({fetcher=(...args)=>fetch(...args),onFailure=()=>{},config=requestConfig,monitor=createMonitor(),now=Date.now}={}) {
+    Object.assign(this,{fetcher,onFailure,config,monitor});
     const options={maxEntries:config.maxCacheEntries,monitor,now};
-    this.searches=new RequestPool({...options,api:'places-search',ttlMs:config.searchCacheTtlMs});
-    this.details=new RequestPool({...options,api:'place-detail',ttlMs:config.placeCacheTtlMs});
+    this.searches=new RequestPool({...options,api:'places-search'});
+    this.details=new RequestPool({...options,api:'place-detail'});
     this.zones=new RequestPool({...options,api:'timezone',ttlMs:config.timeZoneCacheTtlMs,cacheable:validZone});
   }
   retain(places) {
@@ -99,24 +96,39 @@ export class PlacesProvider {
   async search(query,{signal,reason='search-submit',locationBias}={}) {
     const textQuery=query.trim().replace(/\s+/g,' ');
     if([...textQuery].length<this.config.minSearchLength)return [];
-    const key=JSON.stringify([textQuery,language,8,searchFields,locationBias]);
+    const endpoint=reason==='destination'?'destination':'search';
+    const key=JSON.stringify([endpoint,textQuery,locationBias]);
     this.searches.retain(k=>k===key);
     return this.searches.run(key,async requestSignal=>{
-      await this.permit(requestSignal);
-      const {Place}=await this.library();
-      const response=await Place.searchByText({textQuery,fields:searchFields,maxResultCount:8,language,
-        ...(locationBias?{locationBias}:{})});
-      return response.places.map(p=>({...normalizePlace(p),native:p}));
+      const response=await this.request(endpoint,{query:textQuery,bias:locationBias},requestSignal);
+      return response.places.map(normalizePlace);
     },{signal,reason,id:'current-query'});
   }
   describe(place,{signal,reason='place-selection'}={}) {
     return this.details.run(place.id,async requestSignal=>{
-      const options=await this.permit(requestSignal);
-      const {Place}=await this.library();
-      const p=place.native||new Place({id:place.id,requestedLanguage:language});
-      await p.fetchFields({fields:options.googleMedia===false?detailFields.filter(field=>field!=='photos'):detailFields});
-      return normalizePlace(p,{photos:options.googleMedia!==false});
+      const {place:detail}=await this.request('details',{id:place.id},requestSignal);
+      return normalizePlace(detail);
     },{signal,reason,id:place.id});
+  }
+  async restore(id,signal){
+    const {place}=await this.request('restore',{id},signal);
+    return normalizePlace(place);
+  }
+  candidates(place,{rematch,signal}){
+    const {lat,lng,name,address,category,featureType,googleTypes}=place;
+    return this.request('candidates',{query:[name,address].filter(Boolean).join(', ').slice(0,256),
+      place:{lat,lng,name,address,category,featureType,googleTypes},rematch},signal);
+  }
+  async request(endpoint,body,signal){
+    const timeout=AbortSignal.timeout(16000);
+    const response=await this.fetcher('/api/places/'+endpoint,{method:'POST',headers:{'Content-Type':'application/json'},
+      body:JSON.stringify(body),signal:signal?AbortSignal.any([signal,timeout]):timeout});
+    const data=await response.json();
+    if(!response.ok){
+      this.onFailure(data);
+      throw Object.assign(Error(data.message||'Google place services are temporarily unavailable.'),{code:data.code});
+    }
+    return data;
   }
   async inspect(place,{signal,reason='place-selection'}={}) {
     const detail=await this.describe(place,{signal,reason});
@@ -129,28 +141,31 @@ export class PlacesProvider {
     return this.zones.run(timeZoneKey(place),async requestSignal=>{
       const response=await this.fetcher('/api/timezone?lat='+place.lat+'&lng='+place.lng,{signal:requestSignal});
       const data=await response.json();
-      if(!response.ok||!validZone(data.zone))
+      if(!response.ok||!validZone(data.zone)){
+        this.onFailure(data);
         throw Object.assign(Error(data.code?.startsWith('API_')?data.message:'Time zone unavailable'),{code:data.code});
+      }
       return data.zone;
     },{signal,reason,id:place.id||'coordinate'});
   }
 }
 
-export function normalizePlace(p,{photos=true}={}) {
-  const lat=p.location.lat(),lng=p.location.lng();
+export function normalizePlace(p) {
+  const {latitude:lat,longitude:lng}=p.location;
   let hours=null;
   if(p.regularOpeningHours?.periods){
     hours=Object.fromEntries(Array.from({length:7},(_,d)=>[d,[]]));
     for(const period of p.regularOpeningHours.periods){
       const o=period.open,c=period.close;if(!o)continue;
       if(!c){for(let d=0;d<7;d++)hours[d]=[[0,1440]];break;}
-      const start=o.hour*60+o.minute,end=((c.day-o.day+7)%7)*1440+c.hour*60+c.minute;
-      hours[o.day].push([start,end<=start?end+1440:end]);
+      const start=(o.hour??0)*60+(o.minute??0),
+        end=(((c.day??0)-(o.day??0)+7)%7)*1440+(c.hour??0)*60+(c.minute??0);
+      hours[o.day??0].push([start,end<=start?end+1440:end]);
     }
     for(const list of Object.values(hours))list.sort((a,b)=>a[0]-b[0]);
   }
-  return {id:p.id,name:p.displayName,address:p.formattedAddress,lat,lng,zone:null,hours,
+  return {id:p.id,name:p.displayName.text,address:p.formattedAddress,lat,lng,zone:null,hours,
     hoursLabel:'Regular weekly hours from Google · hours for this date are unconfirmed',category:'Google Places',source:'live',
-    photo:photos?p.photos?.[0]?.getURI({maxWidth:500}):undefined,authors:photos?p.photos?.[0]?.authorAttributions:undefined,
-    attributions:p.attributions};
+    photo:p.photo?.url,authors:p.photo?.attribution,photoSource:p.photo?.googleMapsUri,
+    attributions:p.attributions?.map(a=>({provider:a.provider,providerURI:a.providerUri}))};
 }

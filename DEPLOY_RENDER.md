@@ -14,6 +14,7 @@
 | `TRAVEL_LINK_DATA_DIR` | `/var/data` |
 | `GOOGLE_MAPS_BROWSER_KEY` | Maps JavaScript API, Places API (New), Places UI Kit에 사용하는 웹 키 |
 | `GOOGLE_MAPS_SERVER_KEY` | Routes API와 Time Zone API에 사용하는 서버 키 |
+| `GOOGLE_PLACES_SERVER_KEY` | Places API (New) 서버 키. 생략하려면 기존 서버 키에 Places API (New)를 함께 허용해야 함 |
 | `MAPBOX_PUBLIC_TOKEN` | 지도·검색·경로에 사용하는 공개 웹 토큰 |
 | `GOOGLE_MAPS_MAP_ID` | 기존 Cloud Map ID를 쓸 때만 설정 |
 | `TRAVEL_LINK_PUBLIC_URL` | 기본 `onrender.com` 주소에서는 생략. 커스텀 도메인을 실제 접속 주소로 쓸 때만 HTTPS 주소 설정 |

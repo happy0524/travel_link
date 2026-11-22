@@ -78,9 +78,10 @@ try{
  assert.equal(await p.locator('.google-candidate').count(),0);assert.equal(await p.locator('#details > .details-body').count(),0);
  assert.doesNotMatch(await p.locator('#details').innerText(),/sample itinerary|Opening hours unavailable|Select this Google place/);
  assert.ok(await p.locator('#itinerary-content').isVisible());assert.equal(await p.locator('gmp-place-details gmp-place-attribution').count(),1);
+ const candidateRequest=p.waitForRequest(request=>request.url().endsWith('/api/places/candidates'));
  await p.getByRole('button',{name:'Change linked place'}).click();
  const candidate=p.locator('.google-candidate').filter({hasText:'fixture-terminal'});await candidate.locator('button').click();
- assert.equal(await p.evaluate(()=>window.__googleStats.searchLanguage),'en');
+ assert.equal((await candidateRequest).postDataJSON().rematch,true);
  await p.locator('.google-details #add').waitFor();
  assert.match(await p.locator('gmp-place-details').innerText(),/fixture-terminal/);
  assert.equal(await p.evaluate(()=>localStorage.getItem('travel-link.google-place:grand-central')),'fixture-terminal');
@@ -182,5 +183,10 @@ try{
  assert.equal(await unavailable.locator('.visit').count(),4);
  assert.equal(configCalls,1);
  await unavailable.close();
+ await p.route('**/api/service-status',route=>route.fulfill({status:503,json:{code:'API_SITE_STOPPED',message:'Travel Link is temporarily paused.'}}));
+ await p.evaluate(()=>document.dispatchEvent(new Event('visibilitychange')));
+ await p.locator('#service-stop').waitFor({state:'visible'});
+ assert.ok(!await p.locator('#search').isVisible());
+ assert.equal(await p.locator('#mapbox-map .mapbox-visit').count(),0);
  assert.deepEqual(errors,[]);console.log('PASS real-provider migration, calendar keyboard/leap day, minute precision, provider transit guard and recalculation, Mapbox search, UI Kit and responsive panels');
 }finally{await b.close();}

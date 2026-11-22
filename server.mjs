@@ -8,6 +8,7 @@ import {requestConfig} from './src/request-config.js';
 import {language} from './src/ui-copy.js';
 import {createTravelStore} from './travel-store.mjs';
 import {clientIp,createApiUsage,UsageError} from './api-usage.mjs';
+import {createGooglePlaces} from './google-places.mjs';
 const root=fileURLToPath(new URL('.',import.meta.url));
 const browserKey=process.env.GOOGLE_MAPS_BROWSER_KEY||'',serverKey=process.env.GOOGLE_MAPS_SERVER_KEY||'';
 const port=Number(process.env.PORT||5173);
@@ -36,6 +37,13 @@ const usage=createApiUsage(dataDirectory);
 const travelStore=createTravelStore(dataDirectory,json,{allowsOrigin,secureCookie:publicOrigin?.startsWith('https://'),
  rateAuth:(req,user)=>{usage.rate('auth-ip:'+clientIp(req,hosted),16);if(user)usage.rate('auth-user:'+user,16);}});
 const admit=req=>usage.admit(clientIp(req,hosted),()=>travelStore.user(req));
+const places=createGooglePlaces({key:process.env.GOOGLE_PLACES_SERVER_KEY||serverKey,usage,admit,user:travelStore.user,
+ allowsOrigin,secure:publicOrigin?.startsWith('https://'),json,media:usage.browser.googleMedia});
+const pauseTitle='Travel Link is temporarily paused. Please check back later.';
+function pausePage(res,method){
+ res.writeHead(200,{'Content-Type':'text/html; charset=utf-8','Cache-Control':'no-store'});
+ res.end(method==='HEAD'?undefined:'<!doctype html><html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width"><title>Travel Link</title><main><h1>'+pauseTitle+'</h1></main></html>');
+}
 const coords=p=>p&&Number.isFinite(p.lat)&&Number.isFinite(p.lng)&&Math.abs(p.lat)<=90&&Math.abs(p.lng)<=180;
 function timeZoneError(body){
  const reason=Array.isArray(body?.error?.details)?body.error.details.find(item=>typeof item?.reason==='string')?.reason:null;
@@ -63,9 +71,15 @@ const server=http.createServer(async(req,res)=>{
  res.on('close',()=>{if(!res.writableEnded)client.abort();});
  try{
  const url=new URL(req.url,'http://localhost');
+ if(url.pathname==='/api/service-status'){
+  usage.available();json(res,200,{available:true});return;
+ }
+ if(url.pathname==='/'||url.pathname==='/index.html'||url.pathname.startsWith('/api/'))usage.available();
  if(await travelStore(req,res,url.pathname))return;
+ if(await places(req,res,url,client.signal))return;
  if(url.pathname==='/api/config'){
   if(!usage.paused)admit(req);
+  places.issueDestination(res);
   json(res,200,{browserKey:usage.paused?'':browserKey,mapId,
    mapboxToken:usage.paused||!usage.browser.mapbox?'':mapboxToken,
    serverReady:!usage.paused&&!!serverKey,requestMonitor,usageGuard:true,apiPaused:usage.paused,browserOptions:usage.browser});return;
@@ -134,6 +148,8 @@ const server=http.createServer(async(req,res)=>{
  }catch(e){
   if(client.signal.aborted)return;
   if(e instanceof UsageError){
+   if((e.code==='API_SITE_STOPPED'||e.code==='API_USAGE_UNAVAILABLE')&&
+       ['/','/index.html'].includes(req.url?.split('?')[0])){pausePage(res,req.method);return;}
    if(e.retryAfter)res.setHeader('Retry-After',e.retryAfter);
    json(res,e.status,{code:e.code,message:e.message});return;
   }

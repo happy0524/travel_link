@@ -3,6 +3,12 @@ export async function mockGoogle(page,{mapId='',mapboxToken='',uiKit=false,zone=
   const calls=[];calls.timezones=[];
   await page.route(/https:\/\/[^/]*(googleapis|gstatic)\.com\//,route=>route.abort());
   await page.route('**/api/config',route=>route.fulfill({json:{browserKey:'fixture',mapId,mapboxToken,serverReady:true,requestMonitor:true,usageGuard}}));
+  await page.route('**/api/places/*',async route=>{
+    const endpoint=new URL(route.request().url()).pathname.split('/').at(-1);
+    const args=route.request().postDataJSON();
+    const json=await page.evaluate(({endpoint,args})=>window.__placesFixture(endpoint,args),{endpoint,args});
+    await route.fulfill({json});
+  });
   await page.route('**/api/timezone?*',route=>{calls.timezones.push(route.request().url());return route.fulfill({json:{zone}});});
   await page.route('**/api/route',async route=>{
     const body=route.request().postDataJSON();calls.push(body);
@@ -67,7 +73,24 @@ export async function mockGoogle(page,{mapId='',mapboxToken='',uiKit=false,zone=
       });
       defineWidget('gmp-place-details');defineWidget('gmp-place-details-compact');
     }
-    window.google={maps:{Map,LatLng,OverlayView,importLibrary:async()=>({Place})}};
+    window.__placesFixture=async(endpoint,args)=>{
+      const serialize=p=>({id:p.id,displayName:{text:p.displayName},formattedAddress:p.formattedAddress,
+        location:{latitude:p.location.lat(),longitude:p.location.lng()}});
+      if(endpoint==='candidates')return args.rematch?{candidates:[{id:'fixture-terminal'}]}:{id:'fixture-terminal'};
+      if(endpoint==='search'||endpoint==='destination'){
+        const {places}=await Place.searchByText({textQuery:args.query,fields:['id','displayName','formattedAddress','location'],language:'en'});
+        return {places:places.map(serialize)};
+      }
+      const place=new Place({id:args.id});
+      await place.fetchFields({fields:endpoint==='restore'?['id','displayName','location']:['id','displayName','location','regularOpeningHours','photos']});
+      return {place:serialize(place)};
+    };
+    class WidgetPlace {
+      constructor(options){Object.assign(this,options);}
+      static searchByText(){throw Error('Browser Places API permission is intentionally disabled in this fixture');}
+      fetchFields(){throw Error('Browser Places API permission is intentionally disabled in this fixture');}
+    }
+    window.google={maps:{Map,LatLng,OverlayView,importLibrary:async()=>({Place:WidgetPlace})}};
   },{uiKit});
   return calls;
 }

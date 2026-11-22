@@ -22,7 +22,7 @@ test('Pacific month resets at local midnight, including daylight saving time',()
 test('separate connections share caps; charged attempts survive reopening and retries',async t=>{
   const path=await directory(t);
   const env={GOOGLE_TIME_ZONE_MONTHLY_LIMIT:'2',GOOGLE_ROUTES_PRO_MONTHLY_LIMIT:'1'};
-  const first=createApiUsage(path,{env}),second=createApiUsage(path,{env});
+  const first=createApiUsage(path,{env,pilotLatch:false}),second=createApiUsage(path,{env,pilotLatch:false});
   let called=0;
   const task=async()=>++called;
   try{
@@ -31,7 +31,7 @@ test('separate connections share caps; charged attempts survive reopening and re
     assert.equal(requests.filter(result=>result.reason?.code==='API_MONTH_LIMIT').length,2);
     await assert.rejects(first.upstream('routesPro',signal,async()=>{throw Error('upstream failed');}),/upstream failed/);
   }finally{first.close();second.close();}
-  const restarted=createApiUsage(path,{env});
+  const restarted=createApiUsage(path,{env,pilotLatch:false});
   try{
     await assert.rejects(restarted.upstream('timezone',signal,task),{code:'API_MONTH_LIMIT'});
     await assert.rejects(restarted.upstream('routesPro',signal,task),{code:'API_MONTH_LIMIT'});
@@ -41,7 +41,7 @@ test('separate connections share caps; charged attempts survive reopening and re
 
 test('busy and abort checks preserve allowance, while corrupt usage storage fails closed',async t=>{
   const path=await directory(t);
-  const guard=createApiUsage(path,{env:{GOOGLE_TIME_ZONE_MONTHLY_LIMIT:'2',TRAVEL_LINK_API_CONCURRENCY:'1'}});
+  const guard=createApiUsage(path,{pilotLatch:false,env:{GOOGLE_TIME_ZONE_MONTHLY_LIMIT:'2',TRAVEL_LINK_API_CONCURRENCY:'1'}});
   let release;
   try{
     const first=guard.upstream('timezone',signal,()=>new Promise(resolve=>{release=resolve;}));
@@ -56,27 +56,48 @@ test('busy and abort checks preserve allowance, while corrupt usage storage fail
   try{await assert.rejects(broken.upstream('timezone',signal,assert.fail),{code:'API_USAGE_UNAVAILABLE'});}
   finally{broken.close();}
   const paused=createApiUsage(path,{env:{TRAVEL_LINK_API_PAUSED:'1'}});
-  await assert.rejects(paused.upstream('timezone',signal,assert.fail),{code:'API_PAUSED'});
+  await assert.rejects(paused.upstream('timezone',signal,assert.fail),{code:'API_SITE_STOPPED'});
 });
 
-test('caller-supplied forwarding prefixes cannot override the Render visitor IP',()=>{
+test('caller-supplied forwarding prefixes cannot override the Render visitor IP',async t=>{
   const req={socket:{remoteAddress:'127.0.0.1'},headers:{'x-forwarded-for':'198.51.100.1, 203.0.113.7'}};
   assert.equal(clientIp(req,true),'203.0.113.7');
   assert.equal(clientIp(req,false),'127.0.0.1');
   req.headers['x-forwarded-for']='203.0.113.7, invalid';
   assert.equal(clientIp(req,true),'render-unknown');
-  const limiter=createApiUsage('',{env:{TRAVEL_LINK_API_USER_PER_MINUTE:'1',TRAVEL_LINK_API_IP_PER_MINUTE:'2'}});
-  limiter.admit('one',()=> 'same-user');
-  assert.throws(()=>limiter.admit('two',()=> 'same-user'),{code:'API_RATE_LIMIT'});
-  limiter.admit('one',()=>undefined);
-  assert.throws(()=>limiter.admit('one',()=>undefined),{code:'API_RATE_LIMIT'});
+  const limiter=createApiUsage(await directory(t),{env:{TRAVEL_LINK_API_USER_PER_MINUTE:'1',TRAVEL_LINK_API_IP_PER_MINUTE:'2'}});
+  try{
+    limiter.admit('one',()=> 'same-user');
+    assert.throws(()=>limiter.admit('two',()=> 'same-user'),{code:'API_RATE_LIMIT'});
+    limiter.admit('one',()=>undefined);
+    assert.throws(()=>limiter.admit('one',()=>undefined),{code:'API_RATE_LIMIT'});
+  }finally{limiter.close();}
+});
+
+test('a pilot stop survives the billing month until a separate operator resumes it',async t=>{
+  const path=await directory(t);
+  const env={GOOGLE_TIME_ZONE_MONTHLY_LIMIT:'1'};
+  let now=Date.parse('2027-03-01T08:00:00Z');
+  const first=createApiUsage(path,{env,now:()=>now});
+  try{
+    await first.upstream('timezone',signal,async()=>{});
+    assert.equal(first.status().reason,'monthly:timezone');
+  }finally{first.close();}
+  now=Date.parse('2027-04-01T07:00:00Z');
+  const second=createApiUsage(path,{env,now:()=>now}),operator=createApiUsage(path,{env,now:()=>now});
+  try{
+    await assert.rejects(second.upstream('routesEssentials',signal,assert.fail),{code:'API_SITE_STOPPED'});
+    operator.resume();
+    assert.equal(second.status(),null);
+    await second.upstream('routesEssentials',signal,async()=>{});
+  }finally{second.close();operator.close();}
 });
 
 test('paid Google SKUs compete for one modeled won budget while free usage continues',async t=>{
   const path=await directory(t);
   const env={TRAVEL_LINK_OTHER_COST_RESERVE_KRW:'49980',TRAVEL_LINK_USD_KRW_ALL_IN:'2000',
     GOOGLE_ROUTES_PRO_FREE_ALLOCATION:'0',GOOGLE_TIME_ZONE_FREE_ALLOCATION:'1'};
-  const guard=createApiUsage(path,{env}),other=createApiUsage(path,{env});
+  const guard=createApiUsage(path,{env,pilotLatch:false}),other=createApiUsage(path,{env,pilotLatch:false});
   try{
     await guard.upstream('routesPro',signal,async()=>{});
     await other.upstream('timezone',signal,async()=>{});
@@ -106,7 +127,7 @@ test('a lowered cap is independent of the free allocation, with the cost guard s
   const path=await directory(t);
   const env={GOOGLE_TIME_ZONE_MONTHLY_LIMIT:'13',GOOGLE_TIME_ZONE_FREE_ALLOCATION:'1',
     TRAVEL_LINK_OTHER_COST_RESERVE_KRW:'49880',TRAVEL_LINK_USD_KRW_ALL_IN:'2000'};
-  const guard=createApiUsage(path,{env});
+  const guard=createApiUsage(path,{env,pilotLatch:false});
   try{
     for(let i=0;i<13;i++)await guard.upstream('timezone',signal,async()=>{});
     await assert.rejects(guard.upstream('timezone',signal,assert.fail),{code:'API_MONTH_LIMIT'});

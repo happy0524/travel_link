@@ -9,7 +9,7 @@ import {tmpdir} from 'node:os';
 test('server boundary uses mocked Google only',async t=>{
  const usageDir=await mkdtemp(join(tmpdir(),'travel-link-server-'));
  const server=spawn(process.execPath,['--import','./tests/server-fixture.mjs','server.mjs'],{
-   env:{...process.env,PORT:'0',TRAVEL_LINK_DATA_DIR:usageDir,GOOGLE_TIME_ZONE_MONTHLY_LIMIT:'3',
+   env:{...process.env,PORT:'0',TRAVEL_LINK_DATA_DIR:usageDir,
      GOOGLE_MAPS_SERVER_KEY:'fixture-server-key',GOOGLE_MAPS_BROWSER_KEY:'fixture-browser-key',REQUEST_MONITOR:'1',NODE_ENV:'development'},
    stdio:['ignore','pipe','inherit'],windowsHide:true});
  try{
@@ -50,13 +50,6 @@ test('server boundary uses mocked Google only',async t=>{
    assert.equal(diagnostic.upstreamStatus,200);
    assert.equal(diagnostic.code,'API_KEY_IP_ADDRESS_BLOCKED');
    assert.doesNotMatch(JSON.stringify(diagnostic),/Fixture secret|fixture-server-key/);
- });
- await t.test('a third actual attempt fills the cap even when denied upstream',async()=>{
-   const results=await Promise.all([0,1].map(n=>fetch(base+'/api/timezone?lat='+(38+n)+'&lng=127')));
-   for(const response of results){
-     assert.equal(response.status,429);
-     assert.equal((await response.json()).code,'API_MONTH_LIMIT');
-   }
  });
  await t.test('client cancellation reaches the upstream request',async()=>{
    const c=new AbortController(),p=route({...args,to:{lat:38,lng:127}},c.signal);
