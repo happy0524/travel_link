@@ -43,11 +43,31 @@
 
 ## 제공자 콘솔에서 해야 할 일
 
+**현재 Google Cloud 프로젝트에서 확인한 제약** · Places API (New)의 `SearchTextRequest per day`는 할당량 수정 화면에서 변경할 수 없었습니다. Text Search 보호를 이 일일 한도에 의존하지 마세요. 다른 메서드·기간의 할당량은 편집 가능 여부를 각각 확인합니다. 아래 일일 환산값은 편집 가능한 한도에만 적용됩니다.
+
 1. **Google Cloud Console → Google Maps Platform → Quotas**에서 Maps JavaScript API, Places API (New), Places UI Kit, Time Zone API, Routes API의 편집 가능한 항목을 확인하세요. 문서상 Maps JS는 프로젝트당 분당 30,000 지도 로드 및 IP당 300 로드, UI Kit Query는 프로젝트당 분당 6,000, Compute Routes는 분당 3,000, Time Zone은 분당 30,000의 기본 상한이 있습니다. Places (New)는 메서드별 프로젝트 할당량입니다. 시연에는 기본치보다 낮은 값을 설정하세요. 하루 한도가 제공되는 SKU라면 `floor((무료 + 10) / 31)`을 보수적으로 사용합니다. 10,010은 **322/일**, 5,010은 **161/일**, 1,010은 **32/일**입니다. 여러 SKU가 같은 할당량을 공유하면 가장 낮은 기준을 적용하거나 더 좁게 제한하세요. 분당 한도만 있다면 월 상한을 보장하지 못합니다. [Google 비용과 일일 할당량](https://developers.google.com/maps/billing-and-pricing/manage-costs) · [Maps JavaScript 및 UI Kit 할당량](https://developers.google.com/maps/documentation/javascript/usage-and-billing) · [Time Zone 할당량](https://developers.google.com/maps/documentation/timezone/usage-and-billing)
 2. **Google Cloud → APIs & Services → Credentials**에서 브라우저 키는 공개 사이트 HTTPS 리퍼러와 쓰는 브라우저 API만 허용하세요. 별도의 서버 키는 Render **Connect → Outbound** IP 범위와 Time Zone API, Routes API로 제한합니다. API 제한은 SKU별 사용량 제한과 별개입니다. **Cloud Billing → Budgets & alerts**는 감시용입니다. 예산 알림을 생성하는 것만으로 호출이 차단되지는 않습니다. [Google 키 제한](https://developers.google.com/maps/api-security-best-practices) · [Render 송신 IP](https://render.com/docs/outbound-ip-addresses)
 3. **Mapbox Account → Access tokens**에서 이 시연 전용 공개 토큰을 만들고 배포 주소를 **Allowed URLs**에 등록하세요. **Statistics**와 결제 내역에서 상품별 청구 위치를 확인하세요. 기본 Search Box 10 req/s 및 Directions 300 req/min는 월 상한이 아닙니다. 공개 문서에서 일반 계정의 SKU별 월 강제 차단 설정은 확인되지 않았습니다. 카드 없는 계정이 적용되는 경우에는 표준 요금제와 다른 상품별 하드 리밋을 계정 문서에서 확인하세요. [Mapbox 토큰](https://docs.mapbox.com/accounts/guides/tokens/) · [Mapbox 가입 유형](https://docs.mapbox.com/accounts/guides/signup/) · [Directions 제한](https://docs.mapbox.com/api/navigation/directions/)
 
 브라우저 허가는 이 앱의 정상 사용에만 적용됩니다. 브라우저가 받은 키를 직접 사용하거나 이미 열려 있는 SDK가 내부적으로 타일·사진을 요청하면 서버는 그 사용량을 강제할 수 없습니다. 앱의 일시정지는 새 앱 호출을 막지만 이미 발행한 공개 키를 무효화하지 않습니다. 브라우저 과금 자체를 긴급 차단하려면 제공자 콘솔에서 시연 전용 키·토큰을 비활성화하거나 삭제하세요. 정확한 상한을 적용할 수 없는 기능은 시연 동안 Mapbox와 사진·위젯을 끄고, Google도 반드시 제한해야 한다면 녹화본으로 대체합니다. Render 인스턴스·디스크 기본료와 송신 트래픽은 지도 API 카운터 외 비용입니다. [Render 가격](https://render.com/pricing)
+
+## Places 후속 변경안
+
+현재 PR은 아래 호출 구조를 그대로 사용합니다. 서버 경유 전환과 기능 제거는 검토 후 진행합니다.
+
+| 기능 | 현재 호출 | 서버에서 제한할 수 있는 범위 |
+| --- | --- | --- |
+| 첫 편지 목적지·플래너 장소 검색 | `src/efficient-providers.js`의 브라우저 `Place.searchByText` | 공식 Text Search (New) REST를 호출할 수 있습니다. 현재 필드로 예상되는 Pro 버킷의 표준 글로벌 기준은 5,010회이며, 당월 기존·공유 사용량을 차감합니다. |
+| Google 연결 후보 검색 | `src/google-place-details.js`의 별도 브라우저 `Place.searchByText` | 동일한 Text Search 버킷 후보입니다. Mapbox에서 공식 UI Kit를 사용하는 흐름과 일반 Places API 결과의 표시 조건을 각각 확인해야 합니다. |
+| 장소 선택·저장 복원 | `src/efficient-providers.js`와 `src/app.js`의 브라우저 `Place.fetchFields` | 공식 Place Details (New) REST로 옮길 수 있습니다. 현재 이름·좌표만 불러오는 목적지 복원은 Pro, 운영시간 필드를 포함한 상세는 Enterprise 버킷으로 각각 예약할 수 있습니다. |
+| 일반 장소 사진 | `src/efficient-providers.js`의 `getURI()`로 URL을 만들고 `src/app.js`에서 이미지 로드 | 공식 Place Photos (New) REST의 미디어 요청을 별도 카운터로 예약할 수 있습니다. 사진 리소스 이름은 최신 응답에서 받아야 하며 저장하거나 재사용하는 캐시를 두지 않습니다. 사진을 표시한다면 저자 출처와 원본 링크를 유지합니다. |
+| 후보 및 상세 UI Kit 위젯 | `src/google-place-details.js`의 `gmp-place-details-compact` 및 `gmp-place-details` | SDK가 브라우저에서 생성하는 위젯입니다. 자체 REST 상세 API로 바꾸는 것은 UI Kit를 유지하는 방법이 아닙니다. 위젯에 포함된 사진은 일반 Place Photos 호출과 별개이며, Google은 해당 위젯 SKU로 집계합니다. |
+
+**최소 1단계** · 현재 검색 입력창·결과 패널·디바운스를 유지하면서 Google 모드의 검색과 온보딩 목적지 검색만 공식 Text Search (New) REST로 전환합니다. 서버는 고정된 결과 수와 필드 마스크로 요청을 직접 구성하며 SQLite 예약에 성공한 뒤 호출합니다. Places 응답을 캐시에 쓰거나 영속 저장하지 않고, Google 콘텐츠 표시·저작자 출처 요건을 적용합니다. 일반 Places API 결과를 Mapbox에 표시하는 기능은 이 단계에 포함하지 않습니다. 온보딩 검색은 로그인보다 먼저 일어나므로 무인증 범용 엔드포인트로 공개하는 대신 시연 링크의 접근 인증이나 초대 기반 서버 세션을 검토합니다.
+
+**남는 위험** · 이 단계 뒤에도 연결 후보 검색이 브라우저에 남아 있고, 브라우저 키가 Places API (New)를 호출할 수 있어 프로젝트 전체 Text Search 상한을 보장하지 못합니다. 서버 경유만 남기려면 나머지 Text Search 호출을 옮기거나 시연에서 끄고, 상세·사진 등 다른 화면에 필요한 브라우저 키의 API 권한도 함께 재검토해야 합니다. 브라우저 키에서 Places API (New)를 제거해도 지도와 UI Kit가 의도대로 동작하는지는 검증 후 적용합니다. 상세·사진까지 서버 한도로 제한하려면 별도 승인 후 같은 패턴으로 전환합니다. 지도 SDK 및 UI Kit 과금은 서버 카운터로 통제할 수 없으며, 시연에서는 `TRAVEL_LINK_GOOGLE_WIDGETS=0` 또는 `TRAVEL_LINK_GOOGLE_MEDIA=0`을 선택할 수 있습니다. 이미 배포된 공개 키의 사용을 차단해야 하면 제공자 콘솔에서 해당 키의 권한을 제거하거나 키를 비활성화해야 합니다.
+
+[Places REST 안내](https://developers.google.com/maps/documentation/places/web-service/quick-reference) · [Google 서버 경유 보안 지침](https://developers.google.com/maps/api-security-best-practices#secure-proxy) · [표시·저장 정책](https://developers.google.com/maps/documentation/places/web-service/policies) · [사진 API](https://developers.google.com/maps/documentation/places/web-service/place-photos) · [UI Kit 과금](https://developers.google.com/maps/documentation/javascript/places-ui-kit/overview) · [서비스별 추가 약관](https://cloud.google.com/maps-platform/terms/maps-service-terms)
 
 ## 배포 전 백업과 되돌리기
 
