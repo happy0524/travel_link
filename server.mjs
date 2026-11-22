@@ -1,5 +1,6 @@
 ﻿import http from 'node:http';
 import {readFile} from 'node:fs/promises';
+import {accessSync,constants,statSync} from 'node:fs';
 import {fileURLToPath} from 'node:url';
 import path from 'node:path';
 import {RequestPool,createMonitor} from './src/requests.js';
@@ -9,6 +10,19 @@ import {createTravelStore} from './travel-store.mjs';
 const root=fileURLToPath(new URL('.',import.meta.url));
 const browserKey=process.env.GOOGLE_MAPS_BROWSER_KEY||'',serverKey=process.env.GOOGLE_MAPS_SERVER_KEY||'';
 const port=Number(process.env.PORT||5173);
+const hosted=process.env.RENDER==='true';
+const host=hosted?'0.0.0.0':'127.0.0.1';
+const publicUrl=process.env.TRAVEL_LINK_PUBLIC_URL||process.env.RENDER_EXTERNAL_URL;
+const publicOrigin=publicUrl?new URL(publicUrl).origin:null;
+if(hosted&&!publicOrigin?.startsWith('https://'))throw Error('Configure the HTTPS public origin for Travel Link.');
+const dataDirectory=process.env.TRAVEL_LINK_DATA_DIR||path.join(root,'.travel-link');
+if(hosted){
+ if(!process.env.TRAVEL_LINK_DATA_DIR||!path.isAbsolute(dataDirectory)||!statSync(dataDirectory).isDirectory())
+  throw Error('Set TRAVEL_LINK_DATA_DIR to an existing directory on the Render persistent disk.');
+ accessSync(dataDirectory,constants.R_OK|constants.W_OK);
+}
+const allowsOrigin=req=>publicOrigin?req.headers.origin===publicOrigin:
+ ['localhost','127.0.0.1'].some(name=>req.headers.origin===`http://${name}:${req.socket.localPort}`);
 const mapId=process.env.GOOGLE_MAPS_MAP_ID||'';
 const mapboxToken=/^pk\.[A-Za-z0-9._-]+$/.test(process.env.MAPBOX_PUBLIC_TOKEN||'')?process.env.MAPBOX_PUBLIC_TOKEN:'';
 const requestMonitor=process.env.NODE_ENV!=='production'&&(process.env.REQUEST_MONITOR==='1'||requestConfig.instrumentation);
@@ -17,7 +31,7 @@ const monitor=createMonitor(requestMonitor);
 const routeRequests=new RequestPool({api:'route',monitor});
 const zoneRequests=new RequestPool({api:'timezone',monitor});
 const json=(res,status,data)=>{res.writeHead(status,{'Content-Type':'application/json; charset=utf-8','Cache-Control':'no-store'});res.end(JSON.stringify(data));};
-const travelStore=createTravelStore(process.env.TRAVEL_LINK_DATA_DIR||path.join(root,'.travel-link'),json);
+const travelStore=createTravelStore(dataDirectory,json,{allowsOrigin,secureCookie:publicOrigin?.startsWith('https://')});
 const coords=p=>p&&Number.isFinite(p.lat)&&Number.isFinite(p.lng)&&Math.abs(p.lat)<=90&&Math.abs(p.lng)<=180;
 function transitStep(step){
  const t=step.transitDetails,line=t?.transitLine,stops=t?.stopDetails;
@@ -48,7 +62,7 @@ const server=http.createServer(async(req,res)=>{
  json(res,200,{zone:j.timeZoneId});return;
  }
  if(url.pathname==='/api/route'&&req.method==='POST'){
- if(req.headers.origin&&!['http://localhost:'+port,'http://127.0.0.1:'+port].includes(req.headers.origin)){json(res,403,{message:'Request origin is not allowed.'});return;}
+ if((hosted||req.headers.origin)&&!allowsOrigin(req)){json(res,403,{message:'Request origin is not allowed.'});return;}
  if(!serverKey){json(res,503,{message:'The server key for the Routes API is missing.'});return;}
  let body='';for await(const chunk of req){body+=chunk;if(body.length>8192){json(res,413,{message:'Request is too large.'});return;}}
  let args;try{args=JSON.parse(body);}catch{json(res,400,{message:'Invalid JSON.'});return;}
@@ -84,5 +98,5 @@ const server=http.createServer(async(req,res)=>{
  const data=await readFile(filename);const mime={'.css':'text/css; charset=utf-8','.js':'text/javascript; charset=utf-8','.png':'image/png','.svg':'image/svg+xml','.woff2':'font/woff2','.ttf':'font/ttf','.otf':'font/otf'}[path.extname(filename)]||'text/html; charset=utf-8';res.writeHead(200,{'Content-Type':mime,'X-Content-Type-Options':'nosniff','Cache-Control':'no-cache'});res.end(req.method==='HEAD'?undefined:data);
  }catch(e){if(!client.signal.aborted)json(res,e.code==='ENOENT'?404:502,{message:e.code==='ENOENT'?'Not found':'The request failed. Check your network and API settings.'});}
 });
-server.listen(port,'127.0.0.1',()=>console.log('Travel Link running at http://localhost:'+server.address().port));
+server.listen(port,host,()=>console.log('Travel Link running at http://'+(hosted?host:'localhost')+':'+server.address().port));
 

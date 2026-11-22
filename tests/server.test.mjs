@@ -1,6 +1,10 @@
 import {test} from 'node:test';
 import assert from 'node:assert/strict';
 import {spawn} from 'node:child_process';
+import {once} from 'node:events';
+import {mkdtemp,readFile} from 'node:fs/promises';
+import {join} from 'node:path';
+import {tmpdir} from 'node:os';
 
 test('server boundary uses mocked Google only',async t=>{
  const server=spawn(process.execPath,['--import','./tests/server-fixture.mjs','server.mjs'],{
@@ -47,4 +51,62 @@ test('server boundary uses mocked Google only',async t=>{
    for(const p of ['/.env','/server.mjs','/tests/server-fixture.mjs'])assert.equal((await fetch(base+p)).status,404);
  });
  }finally{server.kill();}
+});
+
+test('Render origin, HTTPS cookies and persisted profiles and trips',async()=>{
+ const root=await mkdtemp(join(tmpdir(),'travel-link-render-'));
+ const origin='https://travel-link-test.onrender.com';
+ const env={...process.env,PORT:'0',RENDER:'true',RENDER_EXTERNAL_URL:origin,
+  TRAVEL_LINK_PUBLIC_URL:'',TRAVEL_LINK_DATA_DIR:root,NODE_ENV:'production'};
+ async function start(directory=root){
+  const server=spawn(process.execPath,['server.mjs'],{env:{...env,TRAVEL_LINK_DATA_DIR:directory},stdio:['ignore','pipe','inherit'],windowsHide:true});
+  const [data]=await once(server.stdout,'data',{signal:AbortSignal.timeout(10000)});
+  const port=String(data).match(/0\.0\.0\.0:(\d+)/)?.[1];
+  assert.ok(port);
+  return {server,url:'http://127.0.0.1:'+port};
+ }
+ async function stop(server){const exited=once(server,'exit');server.kill();await exited;}
+ const credentials={action:'enter-profile',name:'Render fixture',number:'0042',allowCreate:true};
+ const post=(app,path,body,source=origin,cookie='')=>fetch(app.url+path,{method:'POST',
+   headers:{Origin:source,Cookie:cookie,'Content-Type':'application/json'},body:JSON.stringify(body)});
+ const signIn=async app=>{
+  const response=await post(app,'/api/travel-session',credentials);
+  assert.equal(response.status,200);
+  const cookie=response.headers.get('set-cookie');
+  assert.match(cookie,/; HttpOnly; SameSite=Strict; Max-Age=\d+; Secure$/);
+  return cookie.split(';')[0];
+ };
+ const app=await start();
+ let saved;
+ try{
+  for(const badOrigin of ['http://127.0.0.1','https://other.onrender.com']){
+   assert.equal((await post(app,'/api/travel-session',credentials,badOrigin)).status,403);
+   assert.equal((await post(app,'/api/route',{},badOrigin)).status,403);
+  }
+  const cookie=await signIn(app);
+  const created=await post(app,'/api/trips',{name:'Render fixture',destination:'Seoul',placeId:'fixture-place',
+    zone:'Asia/Seoul',date:'2026-11-22',time:'09:00',stops:[]},origin,cookie);
+  assert.equal(created.status,201);saved=await created.json();
+  assert.equal((await fetch(app.url)).status,200);
+  for(const url of ['/.env.production','/.travel-link/travel.sqlite','/profile.key','/backups/render-v1/travel.sqlite'])
+   assert.equal((await fetch(app.url+url)).status,404);
+  const logout=await post(app,'/api/travel-session',{action:'logout'},origin,cookie);
+  assert.match(logout.headers.get('set-cookie'),/Max-Age=0; Secure$/);
+ }finally{await stop(app.server);}
+ const restarted=await start();
+ try{
+  const cookie=await signIn(restarted);
+  const trip=await fetch(restarted.url+'/api/trips/'+saved.id,{headers:{Cookie:cookie}});
+  assert.equal(trip.status,200);assert.deepEqual(await trip.json(),saved);
+ }finally{await stop(restarted.server);}
+ const copied=join(root,'backup');
+ const worker=spawn(process.execPath,['scripts/backup-travel.mjs',copied],{env,stdio:'ignore',windowsHide:true});
+ assert.deepEqual(await once(worker,'exit'),[0,null]);
+ assert.deepEqual(await readFile(join(copied,'profile.key')),await readFile(join(root,'profile.key')));
+ const migrated=await start(copied);
+ try{
+  const cookie=await signIn(migrated);
+  const trip=await fetch(migrated.url+'/api/trips/'+saved.id,{headers:{Cookie:cookie}});
+  assert.equal(trip.status,200);assert.deepEqual(await trip.json(),saved);
+ }finally{await stop(migrated.server);}
 });

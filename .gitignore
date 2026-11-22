@@ -1,7 +1,18 @@
 ﻿.tools/
 node_modules/
 .env
+.env.*
+!.env.example
 *.log
 test-results/
 .travel-link/
+backups/
+*.sqlite
+*.sqlite-*
+*.sqlite3
+*.sqlite3-*
+*.db
+*.db-*
+*.bak
+profile.key
 

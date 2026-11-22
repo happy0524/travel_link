@@ -34,7 +34,7 @@ function cleanJourney(body){
   return {name,destination,placeId,date,time,stops,...(zone?{zone}:{})};
 }
 
-export function createTravelStore(directory,json){
+export function createTravelStore(directory,json,{allowsOrigin,secureCookie}){
   let database,profileKey;
   const failures=new Map();
   function db(){
@@ -84,8 +84,7 @@ export function createTravelStore(directory,json){
       return send(200,{trips});
     }
     if(!['POST','PUT'].includes(req.method))return send(405,{message:'Method not allowed.'});
-    const origin=req.headers.origin,port=req.socket.localPort;
-    if(![`http://localhost:${port}`,`http://127.0.0.1:${port}`].includes(origin))return send(403,{message:'Request origin is not allowed.'});
+    if(!allowsOrigin(req))return send(403,{message:'Request origin is not allowed.'});
     if(!req.headers['content-type']?.startsWith('application/json'))return send(415,{message:'Expected a JSON request.'});
     let text='';
     for await(const part of req){text+=part;if(text.length>262144)return send(413,{message:'Request is too large.'});}
@@ -110,7 +109,7 @@ export function createTravelStore(directory,json){
       return send(405,{message:'Method not allowed.'});
     }
     if(req.method!=='POST')return send(405,{message:'Method not allowed.'});
-    const cookie=value=>'travel_session='+value+'; Path=/; HttpOnly; SameSite=Strict; Max-Age='+ (value?sessionAge:0);
+    const cookie=value=>'travel_session='+value+'; Path=/; HttpOnly; SameSite=Strict; Max-Age='+ (value?sessionAge:0)+(secureCookie?'; Secure':'');
     if(body.action==='logout'){
       if(token)db().prepare('DELETE FROM session WHERE token=?').run(digest(token));
       res.setHeader('Set-Cookie',cookie(''));return send(200,{signedIn:false});

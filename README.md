@@ -10,6 +10,8 @@
 
 ## 실행
 
+공개 배포와 기존 데이터 이전 방법은 [Render 배포 안내](DEPLOY_RENDER.md)를 참고하세요.
+
 Node.js 22.13 이상에서 `npm start`를 실행하고 http://localhost:5173 을 엽니다. Windows 로컬 배포본이 설치되어 있으면 다음 명령으로도 실행할 수 있습니다.
 
 ```powershell
