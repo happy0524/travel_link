@@ -1,0 +1,123 @@
+/* UI refinement over styles.css. Existing map palettes, drawing and APIs stay intact.
+   References are composition only: no digo assets, logos or UI imagery are shipped. */
+:root{
+ --bg:#F4F1E8;--surface:#FAF8F2;--ink:#283A29;--muted:#727868;
+ --accent:#405B32;--accent-soft:#EAF0E2;--border:#DFE2D5;
+ --radius:6px;--shadow:0 4px 20px #283A2910;
+ --planner-panel-width:360px;--planner-header-height:64px;
+}
+body{height:100vh;height:100dvh;display:flex;flex-direction:column;overflow:hidden;background:var(--bg)}
+button,input,select{border-radius:6px}
+button:focus-visible,input:focus-visible,select:focus-visible,[tabindex]:focus-visible{outline:2px solid var(--accent);outline-offset:3px}
+header{height:var(--planner-header-height);flex:none;padding:0 24px;gap:16px;background:var(--bg);border-bottom-color:var(--border);position:relative;z-index:20}
+.brand{font-size:23px;color:var(--ink)}
+.brand-mark{background:transparent;color:var(--accent);padding:0;font-size:27px;border-radius:0}
+.brand-sub{color:var(--muted);font-size:12px}
+.badge{padding:0;background:transparent;color:var(--muted);font-size:10px;font-weight:500}
+#service{font-size:12px;background:transparent;padding:8px 12px}
+main{flex:1;min-height:0;height:auto;display:grid;grid-template-columns:var(--planner-panel-width) minmax(0,1fr)}
+.itinerary{min-height:0;min-width:0;height:100%;border-left:0;border-right:1px solid var(--border);padding:32px 24px;background:var(--surface);overflow-y:auto;overscroll-behavior:contain;scrollbar-width:thin;scrollbar-color:#CAD0BE transparent}
+.trip-heading{padding:0 0 24px}
+.eyebrow{font-size:9px;letter-spacing:1.7px;font-weight:500;color:var(--muted)}
+.trip-heading h1{font-size:25px;line-height:1.4;letter-spacing:-.8px;font-weight:650;margin:12px 0 8px}
+.trip-heading>p{font-size:12px;color:var(--muted);margin:0}
+.toolbar{height:auto;display:grid;grid-template-columns:minmax(0,1.1fr) minmax(0,1fr);gap:16px 12px;padding:0 0 24px;margin-bottom:24px;background:transparent;border-color:var(--border)}
+.toolbar label{font-size:11px;gap:8px;min-width:0}
+.toolbar input{height:38px;width:100%;padding:8px;font-size:12px;min-width:0;background:transparent}
+.field-caption{display:flex;align-items:baseline;justify-content:space-between;gap:4px}
+#weekday{font-size:10px;padding:0;margin:0;color:var(--muted)}
+.timezone{grid-column:1/-1;border-left:0;padding:0;display:flex;gap:8px;align-items:center}
+.timezone small,.timezone strong{font-size:10px;font-weight:400;color:var(--muted)}
+.timezone small::after{content:" ·";margin-left:4px}
+.itinerary-heading{gap:8px}
+.itinerary-heading h2{font-size:15px;font-weight:650;margin:0;letter-spacing:-.2px}
+#count{font-size:11px;font-weight:500;padding:2px 6px;background:#E9EDDF;color:var(--accent);margin-left:4px}
+.itinerary .hint{font-size:10px;line-height:1.7;margin:8px 0 20px;color:var(--muted)}
+/* One connected itinerary, not a stack of bordered cards. */
+#visits{position:relative}
+#visits::before{content:"";position:absolute;left:11px;top:28px;bottom:28px;width:1px;background:#D8DECD;pointer-events:none}
+.visit,.visit.selected{position:relative;padding:16px 8px 16px 40px;border:0;border-radius:0;box-shadow:none;background:transparent;isolation:isolate}
+.visit.selected::before{content:"";position:absolute;inset:8px 0 8px 32px;z-index:-1;background:var(--accent-soft);border-radius:6px;pointer-events:none}
+.visit-head{position:relative;gap:6px;align-items:start}
+.visit .number{position:absolute;left:-40px;top:0;width:24px;height:24px;flex:none;background:var(--surface);border:1px solid #CAD3BC;color:var(--accent);font-size:11px;z-index:1}
+.visit.selected .number{background:var(--accent);border-color:var(--accent);color:var(--surface)}
+.visit-title{order:0;flex:1;min-width:0}
+.visit h3{font-size:14px;line-height:1.4;font-weight:650;margin:0;color:var(--ink);overflow-wrap:anywhere}
+.visit-category{font-size:10px;line-height:1.6;color:var(--muted);margin:5px 0 0}
+.start-label{background:transparent;font-size:9px;padding:0;margin-right:4px;font-weight:600}
+.visit-stay-summary{white-space:nowrap}
+.visit-details{display:block;padding:0;margin:8px 0 0;border:0;background:transparent;font-size:10px;color:var(--accent);text-decoration:underline;text-underline-offset:3px}
+.visit .grip{order:2;flex:none;width:12px;line-height:24px;font-size:18px;color:#A2AD94;cursor:grab;user-select:none}
+.visit-actions{order:1;gap:0;align-items:center;opacity:.5}
+.visit:hover .visit-actions,.visit:focus-within .visit-actions,.visit.selected .visit-actions{opacity:.85}
+.move-buttons{gap:0}
+.move-buttons button,.remove{border:0;background:transparent;color:var(--muted);padding:0;width:20px;min-height:28px;height:28px;font-size:12px;line-height:28px}
+.remove{font-size:16px}
+.visit-info{margin-top:12px;padding-top:12px;gap:8px;border-top:1px solid #D8E1CC}
+.visit:not(.selected) .visit-info,.visit:not(.selected) .warning,.visit:not(.selected) .waiting{display:none}
+.times{font-size:11px;gap:8px}
+.times span{font-size:10px;color:var(--muted);margin-bottom:8px}
+.times time{font-size:11px;line-height:30px;white-space:normal;font-variant-numeric:tabular-nums}
+.stay-control{font-size:10px;gap:8px;color:var(--muted)}
+.stay-control input{width:48px;height:30px;font-size:12px;background:var(--surface);padding:4px}
+.warning{font-size:12px;line-height:1.6;background:#F5EDDF;color:#93662F;margin-top:8px;padding:8px;border-radius:4px}
+.waiting{font-size:12px;gap:6px;line-height:1.5;min-height:28px}
+.segment{position:relative;width:calc(100% - 40px);margin:0 0 0 40px;padding:4px 8px 4px 0;border:0;border-radius:0;background:transparent;color:var(--muted);font-size:10px;line-height:1.5}
+.segment small{font-size:10px;line-height:1.5;margin-top:2px}
+.segment.active{background:transparent;color:var(--accent)}
+.segment:hover{background:transparent;color:var(--accent)}
+.visit.dragging{opacity:.4}
+.visit.drag-over{box-shadow:inset 0 2px var(--accent)}
+#summary{background:transparent;border:0;border-top:1px solid var(--border);border-radius:0;margin:24px 0 0;padding:16px 0 0;font-size:11px}
+.summary-caption,.metrics dt,.comparison small{font-size:11px;color:var(--muted)}
+.metrics{gap:12px;margin:12px 0 0}
+.metrics dd{font-size:12px}
+.metrics>div:last-child{border-top:0;padding-top:0}
+.comparison{border-color:var(--border);margin-top:12px;padding-top:12px}
+footer{margin-top:24px;padding:16px 0 0;border-color:var(--border);font-size:10px;line-height:1.7}
+footer p{margin:8px 0}
+footer details{margin-top:16px}
+#map-disclaimer{margin:8px 0;color:var(--muted)}
+.map-area{min-width:0;min-height:0;height:100%;background:var(--map)}
+.map-area::after{content:none;pointer-events:none}
+.map-search{position:absolute;top:24px;left:50%;transform:translateX(-50%);width:min(560px,calc(100% - 96px));z-index:6}
+#search-form{width:100%;margin:0;padding:6px 8px 6px 16px;gap:8px;background:var(--surface);border:1px solid #D7DCCF;border-radius:8px;box-shadow:var(--shadow)}
+#search-form>span{color:var(--accent);font-size:24px}
+#search{font-size:13px;padding:8px 0;border:0;outline-offset:2px}
+#search-form>button{font-size:12px;padding:8px 16px;background:var(--accent);color:var(--surface);border-color:var(--accent)}
+#results{top:calc(100% + 8px);background:var(--surface);border:1px solid var(--border);border-radius:8px;max-height:min(400px,55vh);z-index:20}
+.result{font-size:13px;padding:12px 16px;background:var(--surface);line-height:1.5}
+.result small{font-size:11px;color:var(--muted)}
+.map-tools,.live-map .map-tools{right:24px;bottom:72px;gap:0;z-index:3;border:1px solid var(--border);border-radius:8px;overflow:hidden;box-shadow:var(--shadow)}
+.map-tools button{width:38px;height:38px;font-size:20px;border:0;border-bottom:1px solid var(--border);border-radius:0;background:var(--surface)}
+.map-tools button:last-child{border-bottom:0}
+.details{position:static;width:100%;max-height:none;overflow:visible;border:0;background:transparent;border-radius:0;box-shadow:none}
+.details .close{position:static;display:inline-block;padding:0;margin:0 0 24px;border:0;border-radius:0;background:transparent;color:var(--accent);font-size:12px}
+.details-body{padding:0}
+.details-body h2{font-size:23px;line-height:1.5;margin:8px 0 16px}
+.details-body p{font-size:12px;color:var(--muted);line-height:1.8}
+.place-photo{width:100%;height:176px;object-fit:cover;border-radius:4px;margin-bottom:16px}
+.primary{font-size:12px;white-space:nowrap;min-height:44px;width:100%;margin-top:24px;border:0;background:var(--accent)}
+.primary:hover{background:#314B27}
+.already-added{background:var(--accent-soft);color:var(--accent)}
+.already-added:hover{background:var(--accent-soft);color:var(--accent)}
+.hours{font-size:12px;line-height:1.8;border-color:var(--border);padding-top:16px;margin-top:24px}
+.edge-settings{bottom:64px;z-index:7;width:min(320px,calc(100% - 48px));padding:16px;background:var(--surface);border-color:var(--border);border-radius:8px;box-shadow:var(--shadow)}
+.edge-settings p{font-size:11px}
+#notice{left:calc(50% + 180px);bottom:24px;width:max-content;max-width:min(480px,calc(100vw - 32px));font-size:12px;line-height:1.6;background:var(--ink);border-radius:8px;padding:12px 16px;pointer-events:none}
+@container(max-width:280px){.visit-info{flex-wrap:wrap}.times{flex-basis:100%}.stay-control{flex-direction:row;align-items:center}.visit-actions{flex-direction:row}.visit-head{flex-wrap:wrap}.visit-title{flex-basis:calc(100% - 90px)}}
+@media(max-width:1000px){.brand-sub{display:none}}
+@media(max-width:760px){
+ body{height:auto;min-height:100dvh;overflow:auto}header{height:64px;padding:0 16px;gap:8px}.brand{font-size:20px}.badge{display:none}#service{font-size:11px;padding:8px}
+ main{display:flex;flex-direction:column;min-height:0;flex:auto}
+ .map-area{order:0;height:52vh;height:52dvh;min-height:320px;flex:none}
+ .itinerary{order:1;overflow:visible;height:auto;width:100%;border-right:0;border-top:1px solid var(--border);padding:24px}
+ .map-search{top:16px;width:calc(100% - 32px)}#search-form{padding-left:12px}#search-form>button{padding:8px 12px}
+ #results{max-height:calc(52dvh - 88px)}
+ .map-tools,.live-map .map-tools{right:16px;bottom:56px}
+ .map-tools button{height:34px;width:34px;font-size:19px}
+ .toolbar{grid-template-columns:minmax(0,1.1fr) minmax(0,1fr);gap:16px 12px;padding:0 0 24px}
+ .move-buttons button,.remove{width:28px}
+ .timezone{margin:0;padding:0}.details{width:100%}
+ #notice{left:50%;bottom:24px}
+}

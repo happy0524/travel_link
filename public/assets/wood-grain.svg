@@ -1,0 +1,12 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="144" height="144" viewBox="0 0 144 144">
+  <filter id="grain" x="0" y="0" width="100%" height="100%">
+    <feTurbulence type="fractalNoise" baseFrequency=".66" numOctaves="3" seed="31" stitchTiles="stitch"/>
+    <feColorMatrix type="saturate" values="0"/>
+    <feComponentTransfer>
+      <feFuncR type="linear" slope="2" intercept="-.55"/>
+      <feFuncG type="linear" slope="2" intercept="-.55"/>
+      <feFuncB type="linear" slope="2" intercept="-.55"/>
+    </feComponentTransfer>
+  </filter>
+  <rect width="144" height="144" filter="url(#grain)" opacity=".20"/>
+</svg>

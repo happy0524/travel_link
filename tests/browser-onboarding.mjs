@@ -1,0 +1,208 @@
+import assert from 'node:assert/strict';
+import {chromium} from 'playwright';
+import {mockGoogle} from './google-fixture.mjs';
+import {mockMapbox} from './mapbox-fixture.mjs';
+
+const base=process.env.TEST_BASE_URL;
+const browser=await chromium.launch({channel:'msedge',headless:true});
+try{
+ const errors=[];
+ async function newPage(reducedMotion='no-preference'){
+  const page=await browser.newPage({locale:'ko-KR',timezoneId:'America/Los_Angeles',viewport:{width:1440,height:900},reducedMotion});
+  page.on('pageerror',error=>errors.push(error.message));
+  await mockGoogle(page,{mapboxToken:'pk.fixture.public',uiKit:true});
+  await mockMapbox(page);
+  await page.goto(base);
+  await page.locator('#arrival').waitFor();
+  return page;
+ }
+ const page=await newPage(),dialog=page.locator('#arrival'),begin=page.getByRole('button',{name:'Begin my journey'});
+ await page.clock.setFixedTime(new Date('2026-11-22T01:30:00Z'));
+ await page.waitForFunction(()=>window.__mapboxFixture?.options);
+ assert.equal(await page.locator('html').getAttribute('lang'),'en');
+ assert.equal(await page.locator('#captain-letter').getAttribute('lang'),'ko');
+ assert.equal(await page.locator('#arrival-title').textContent(),'A Letter from the Captain');
+ assert.equal(await page.locator('#arrival-first [data-letter]').count(),0);
+ assert.ok(await page.locator('#arrival-first').evaluate(e=>[...e.children].filter(child=>!child.hidden).at(-1).id==='arrival-begin'));
+ assert.doesNotMatch(await page.locator('#arrival-first button').allTextContents().then(v=>v.join(' ')),/Trip details|Sign in|Create Account/);
+ assert.doesNotMatch(await page.locator('#arrival-first').textContent(),/Use a previous password/);
+ assert.equal(await page.locator('#arrival-number').getAttribute('inputmode'),'numeric');
+ assert.equal(await page.locator('#arrival-number').getAttribute('type'),'password');
+ for(const [width,height] of [[1920,1080],[1440,900],[390,844],[800,390]]){
+  await page.setViewportSize({width,height});
+  assert.ok(await dialog.evaluate(panel=>{
+   const box=panel.getBoundingClientRect(),scroller=panel.querySelector('.arrival-scroll'),inner=scroller.getBoundingClientRect();
+   return box.bottom<=innerHeight&&box.right<=innerWidth&&inner.top-box.top>=20&&box.bottom-inner.bottom>=20&&
+    getComputedStyle(scroller).scrollbarColor==='rgb(121, 87, 67) rgb(252, 247, 237)';
+  }));
+  await begin.scrollIntoViewIfNeeded();
+  assert.ok(await begin.evaluate(e=>{const r=e.getBoundingClientRect(),s=e.closest('.arrival-scroll').getBoundingClientRect();return r.top>=s.top&&r.bottom<=s.bottom;}));
+ }
+ await page.locator('#arrival-name').fill('Morgan Rivera');
+ assert.equal(await page.locator('#arrival-first input[type=email],#arrival-open-date,#arrival-open-time').count(),0);
+ await page.locator('#arrival-destination').fill('Seoul');
+ await page.locator('#find-destination').click();
+ await page.locator('#destination-results button').first().click();
+ await page.waitForFunction(()=>document.querySelector('#arrival-zone').textContent==='Asia/Seoul');
+ await page.locator('#arrival-number').fill('007');
+ let accountAttempts=0,saveAttempts=0;
+ await page.route('**/api/travel-session',route=>route.request().method()==='POST'&&route.request().postDataJSON().action==='enter-profile'&&++accountAttempts===1
+  ?route.fulfill({status:503,json:{message:'Try account access again.'}}):route.continue());
+ await page.route('**/api/trips',async route=>{
+  if(route.request().method()!=='POST'||++saveAttempts!==1)return route.continue();
+  assert.ok((await route.fetch()).ok());
+  await route.fulfill({status:503,json:{message:'Try saving your trip again.'}});
+ });
+ await begin.click();
+ await page.getByText('Try account access again.',{exact:true}).waitFor();
+ assert.equal(await page.locator('#arrival-number').inputValue(),'007');
+ await begin.click();
+ await page.getByText('Try saving your trip again.',{exact:true}).waitFor();
+ assert.ok(!await page.locator('#arrival-second').isVisible());
+ assert.equal(await page.locator('#arrival-name').inputValue(),'Morgan Rivera');
+ const storedResponse=page.waitForResponse(r=>r.url().endsWith('/api/trips')&&r.request().method()==='POST'&&r.ok());
+ await begin.click();
+ const stored=await (await storedResponse).json();
+ await page.locator('#arrival-second').waitFor();
+ assert.deepEqual(await page.locator('[data-letter]').allTextContents(),['Morgan Rivera','Same place name']);
+ assert.equal(accountAttempts,2);assert.deepEqual(stored.stops,[]);
+ assert.equal(stored.date,'2026-11-22');
+ assert.equal(stored.time,'09:00');assert.equal(stored.zone,'Asia/Seoul');
+ assert.equal((await page.request.get(base+'/api/trips').then(r=>r.json())).trips.length,1);
+ assert.ok(!await page.locator('#arrival-first').isVisible());
+ assert.ok(await page.evaluate(()=>window.__mapboxStats.moves.some(move=>move.method==='ease'&&move.padding.top===0)));
+ assert.ok(await page.evaluate(()=>!window.__mapboxStats.moves.some(move=>move.method==='fly')));
+ await page.waitForFunction(()=>document.querySelector('#arrival').getAnimations().length===0);
+ await page.locator('#arrival-second').hover();
+ await page.waitForTimeout(2200);
+ assert.ok(await page.locator('#arrival-second').isVisible());
+ await dialog.waitFor({state:'hidden',timeout:3000});
+ await page.locator('#my-trips:focus').waitFor();
+ const movement=await page.evaluate(()=>window.__mapboxStats.moves.slice(-2));
+ assert.deepEqual(movement.map(move=>move.method),['ease','fly']);
+ assert.equal(await page.locator('#zone').textContent(),'Asia/Seoul');
+ assert.equal(await page.locator('.visit').count(),0);
+
+ await page.setViewportSize({width:1440,height:900});
+ await page.locator('#search').fill('landmark');
+ await page.locator('#search-form button').click();
+ await page.locator('#results button').first().click();
+ await page.locator('#add').click();
+ await page.locator('#close-details').click();
+ const visit=await page.locator('.visit').getAttribute('data-visit');
+ const saved=page.waitForResponse(response=>response.url().includes('/api/trips/')&&response.request().method()==='PUT'&&response.request().postDataJSON().stops[0]?.stay===75);
+ await page.locator('[data-stay]').fill('75');
+ await page.getByRole('button',{name:'Save trip',exact:true}).click();
+ const response=await saved,savedURL=response.url();
+ assert.ok(response.ok());
+ await page.locator('#save-status[data-status=saved]').waitFor();
+ await page.locator('#my-trips').click();
+ const current=page.getByRole('button',{name:/Current trip/});
+ await current.waitFor();
+ assert.ok(!await page.locator('body').evaluate(e=>e.classList.contains('arrival-screen')));
+ await current.click();
+ await dialog.waitFor({state:'hidden'});
+ await page.locator('#my-trips:focus').waitFor();
+ assert.equal(await page.locator('.visit.selected').getAttribute('data-visit'),visit);
+ const tomorrow=new Date(stored.date+'T00:00:00Z');
+ tomorrow.setUTCDate(tomorrow.getUTCDate()+1);
+ const changedDate=tomorrow.toISOString().slice(0,10);
+ await page.locator('#open-date').click();await page.keyboard.press('ArrowRight');await page.keyboard.press('Enter');
+ await page.locator('#open-time').click();
+ await page.locator('#time-popover .time-options').nth(2).getByRole('button',{name:'37',exact:true}).click();
+ const scheduleSaved=page.waitForResponse(r=>r.url()===savedURL&&r.request().method()==='PUT'&&r.request().postDataJSON().time==='09:37');
+ await page.locator('#time-popover .schedule-apply').click();
+ assert.ok((await scheduleSaved).ok());
+ const edited=await page.request.get(savedURL).then(r=>r.json());
+ assert.equal(edited.date,changedDate);assert.equal(edited.time,'09:37');assert.equal(edited.zone,'Asia/Seoul');
+ assert.equal(await page.locator('[data-metric=start]').innerText(),'09:37');
+ const other=await browser.newPage();
+ assert.equal((await other.request.get(savedURL)).status(),401);
+ await other.close();
+ async function enter(name,number){
+  const context=await browser.newContext();
+  const r=await context.request.post(base+'/api/travel-session',{headers:{origin:base},data:{action:'enter-profile',name,number}});
+  assert.equal(r.status(),200);
+  assert.deepEqual(Object.keys(await r.json()).sort(),['needsProfile','signedIn']);
+  return context;
+ }
+ for(const [name,number] of [['Morgan Rivera','7'],['Jamie Rivera','007']]){
+  const context=await enter(name,number);
+  assert.deepEqual(await context.request.get(base+'/api/trips').then(r=>r.json()),{trips:[]});
+  assert.equal((await context.request.get(savedURL)).status(),404);
+  await context.close();
+ }
+ const pair=await Promise.all([enter('Concurrent Name','0123'),enter('CONCURRENT  NAME','0123')]);
+ const created=await pair[0].request.post(base+'/api/trips',{headers:{origin:base},data:{...stored,name:'Concurrent Name'}});
+ assert.equal(created.status(),201);
+ assert.equal((await pair[1].request.get(base+'/api/trips').then(r=>r.json())).trips[0].id,(await created.json()).id);
+ await Promise.all(pair.map(context=>context.close()));
+ await page.reload();
+ await page.getByRole('button',{name:/Resume · Seoul/}).waitFor();
+ await page.locator('#arrival-logout').click();
+ await page.locator('#arrival-name').fill('  MORGAN   RIVERA  ');
+ await page.locator('#arrival-number').fill('007');
+ await begin.click();
+ await page.getByRole('button',{name:/Resume · Seoul/}).waitFor();
+ assert.ok(!await page.locator('#arrival-second').isVisible());
+ assert.doesNotMatch(await dialog.innerText(),/Signed in\./);
+ const [left,right]=await Promise.all([page.locator('#new-journey').boundingBox(),page.locator('#arrival-logout').boundingBox()]);
+ assert.equal(left.y,right.y);assert.equal(left.height,right.height);assert.equal(right.x-left.x-left.width,14);
+ await page.locator('#new-journey').click();
+ assert.equal(await page.locator('#arrival-name').inputValue(),'  MORGAN   RIVERA  ');
+ await page.reload();
+ await page.getByRole('button',{name:/Resume · Seoul/}).click();
+ await page.locator('#arrival-second').waitFor();
+ assert.equal(await page.locator('[data-letter=name]').textContent(),'Morgan Rivera');
+ await dialog.waitFor({state:'hidden'});
+ await page.locator('#my-trips').waitFor();
+ assert.equal(await page.locator('.visit').getAttribute('data-visit'),visit);
+ assert.equal(await page.locator('[data-stay]').inputValue(),'75');
+ assert.equal(await page.locator('#date').inputValue(),changedDate);
+ assert.equal(await page.locator('#time').inputValue(),'09:37');
+
+ const legacy=await newPage('reduce');
+ const legacyBegin=legacy.getByRole('button',{name:'Begin my journey'});
+ await legacy.goto(base+'/#legacy-access');
+ await legacy.reload();
+ await legacy.locator('#legacy-email').fill('previous@example.org');
+ await legacy.locator('#legacy-method').selectOption('legacy-login');
+ await legacy.locator('#legacy-secret').fill('old test secret');
+ await legacy.getByRole('button',{name:'Open saved trips'}).click();
+ const resume=legacy.getByRole('button',{name:/Resume · Saved Seoul/});
+ await resume.waitFor();
+ assert.ok(!await legacy.locator('#arrival-second').isVisible());
+ await legacy.locator('#arrival-migration summary').click();
+ await legacy.locator('#migration-name').fill('Morgan Rivera');
+ await legacy.locator('#migration-number').fill('007');
+ await legacy.getByRole('button',{name:'Link profile'}).click();
+ await legacy.getByText(/That traveler profile cannot be linked/).waitFor();
+ await legacy.locator('#migration-name').fill('Previous traveler');
+ await legacy.locator('#migration-number').fill('00018');
+ await legacy.getByRole('button',{name:'Link profile'}).click();
+ await legacy.getByText(/Traveler profile linked/).waitFor();
+ await legacy.locator('#arrival-logout').click();
+ await legacy.getByRole('button',{name:'Back to the letter'}).click();
+ await legacy.locator('#arrival-name').fill('Previous traveler');
+ await legacy.locator('#arrival-number').fill('00018');
+ await legacyBegin.click();
+ await resume.waitFor();
+ assert.equal((await legacy.request.get(base+'/api/trips').then(r=>r.json())).trips[0].id,'legacy-trip');
+ await resume.click();
+ await legacy.locator('#arrival-second').waitFor();
+ assert.equal(await legacy.locator('[data-letter=name]').textContent(),'Previous traveler');
+ assert.deepEqual(await legacy.evaluate(()=>window.__mapboxStats.moves.slice(-1).map(move=>[move.method,move.padding.top])),[['jump',0]]);
+ await legacy.locator('#my-trips').waitFor();
+ assert.equal(await legacy.evaluate(()=>window.__mapboxStats.moves.at(-1).method),'jump');
+ assert.equal(await legacy.locator('#date').inputValue(),'2028-01-02');
+ assert.equal(await legacy.locator('#time').inputValue(),'08:42');
+ assert.equal(await legacy.locator('#zone').textContent(),'America/Los_Angeles');
+ let blocked=false;
+ for(let i=0;i<20&&!blocked;i++){
+  const response=await legacy.request.post(base+'/api/travel-session',{headers:{origin:base},data:{action:'enter-profile',name:'Previous traveler',number:'0',allowCreate:false}});
+  assert.ok([409,429].includes(response.status()));blocked=response.status()===429;
+ }
+ assert.ok(blocked);
+ assert.deepEqual(errors,[]);
+ console.log('PASS letter layout, numeric authentication, migrated legacy account, autosave, previous trips, and timed globe arrival');
+}finally{await browser.close();}

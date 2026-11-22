@@ -1,3 +1,4 @@
+import {backToList,connectGoogle} from './ui-helpers.mjs';
 import assert from 'node:assert/strict';
 import {mockGoogle} from './google-fixture.mjs';
 
@@ -10,18 +11,18 @@ export async function measureRequests(browser,baseURL,{verify=true}={}){
  const delta=(a,b)=>Object.fromEntries(Object.keys(a).map(k=>[k,b[k]-a[k]]));
  const search=async()=>{await page.locator('#search').fill('four');await page.locator('#search-form').evaluate(e=>e.requestSubmit());await page.locator('[data-result]').first().waitFor();};
  const inspect=async n=>{await page.locator('[data-result="ChIJ-stable-'+n+'"]').click();await page.locator('#add').waitFor();};
- const start=async()=>{await page.goto(baseURL);await settled();await page.locator('#service').click();await settled();};
+ const start=async()=>{await page.goto(baseURL);await settled();await connectGoogle(page);await settled();};
  const modes=async mode=>{for(let i=0;i<3;i++){await page.locator('.segment').nth(i).click();await page.locator('[data-mode="'+mode+'"]').click();await settled();await page.locator('#close-edge').click();}};
  const output={};
  try{
    await start();
    const initial=await counts();
-   for(let n=1;n<=4;n++){await search();await inspect(n);await page.locator('#add').click();await settled();await page.locator('#close-details').click();}
+   for(let n=1;n<=4;n++){await search();await inspect(n);await page.locator('#add').click();await settled();await backToList(page);}
    output.buildFour=delta(initial,await counts());
    let before=await counts();
    for(const id of await page.locator('.visit').evaluateAll(es=>es.map(e=>e.dataset.visit))){
-     await page.locator('[data-visit="'+id+'"]').click();await page.locator('#close-details').click();
-     await page.locator('[data-node="'+id+'"]').dispatchEvent('click');await page.locator('#close-details').click();
+     await page.locator('[data-visit="'+id+'"]').click();await backToList(page);
+     await page.locator('[data-node="'+id+'"]').dispatchEvent('click');await backToList(page);
    }
    await page.locator('.segment').first().click();await page.locator('#close-edge').click();
    await page.locator('#zoom-in').click();await page.locator('#zoom-out').click();
@@ -44,11 +45,13 @@ export async function measureRequests(browser,baseURL,{verify=true}={}){
    await page.waitForTimeout(200);assert.match(await page.locator('.visit').first().locator('.times').innerText(),/10:04/);
    // A new live session, repeatedly inspecting one place before adding it.
    await start();before=await counts();
-   for(let n=0;n<3;n++){await search();await inspect(1);if(n<2)await page.locator('#close-details').click();}
+   for(let n=0;n<3;n++){await search();await inspect(1);if(n<2)await backToList(page);}
    await page.locator('#add').click();await settled();
+   await backToList(page);
    for(let n=0;n<3;n++){
      await page.locator('.visit').first().click();
      await page.evaluate(()=>window.__googleFixtureMap.listeners.click({placeId:'ChIJ-stable-1',stop(){}}));
+     await page.locator('.visit.selected [data-details]').click();
      await page.locator('#add').click();
    }
    assert.equal(await page.locator('.visit').count(),1);
@@ -74,17 +77,17 @@ export async function verifyLiveFailures(browser,baseURL){
    await page.locator('[data-result="ChIJ-stable-'+n+'"]').click();
  };
  try{
-   await page.goto(baseURL);await settled();await page.locator('#service').click();await settled();
-   await search(1);await page.locator('#add').click();await settled();await page.locator('#close-details').click();
+   await page.goto(baseURL);await settled();await connectGoogle(page);await settled();
+   await search(1);await page.locator('#add').click();await settled();await backToList(page);
    await page.route('**/api/timezone?*',r=>r.fulfill({status:502,json:{message:'fixture failure'}}));
    await search(2);await page.locator('#notice').filter({hasText:'시간대를 확인하지 못해'}).waitFor();
    assert.equal(await page.locator('#add').isVisible(),false);assert.equal(await page.locator('.visit').count(),1);
    await page.route('**/api/timezone?*',r=>r.fulfill({json:{zone:'Asia/Tokyo'}}));
    await search(2);await page.locator('#add').click();assert.equal(await page.locator('.visit').count(),1);
-   await page.locator('#notice').filter({hasText:'다른 시간대'}).waitFor();await page.locator('#close-details').click();
+   await page.locator('#notice').filter({hasText:'다른 시간대'}).waitFor();await backToList(page);
    await page.route('**/api/timezone?*',r=>r.fulfill({json:{zone:'Asia/Seoul'}}));
    // New place avoids reusing the deliberately confirmed Tokyo fixture zone.
-   await search(3);await page.locator('#add').click();await settled();await page.locator('#close-details').click();
+   await search(3);await page.locator('#add').click();await settled();await backToList(page);
    let started;const firstStarted=new Promise(r=>started=r);
    await page.route('**/api/route',async r=>{
      const old=r.request().postDataJSON().departure.includes('01:10:00');

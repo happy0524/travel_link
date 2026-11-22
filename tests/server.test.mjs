@@ -17,7 +17,12 @@ test('server boundary uses mocked Google only',async t=>{
  const route=(data=args,signal)=>fetch(base+'/api/route',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(data),signal});
  await t.test('simultaneous identical route requests use one upstream request',async()=>{
    const results=await Promise.all([route(),route()]);
-   for(const r of results){assert.equal(r.status,200);assert.equal((await r.json()).minutes,10);}
+   for(const r of results){
+     assert.equal(r.status,200);const data=await r.json();
+     assert.equal(data.minutes,10);assert.equal(data.distance,800);assert.equal(data.fare,'$3.00');
+     assert.equal(data.steps[0].seconds,90);assert.equal(data.steps[1].arrivalStop,'Second Stop');
+     assert.equal(data.steps[1].agencies[0].name,'Transit Authority');
+   }
    const m=await monitor();assert.equal(m.counts['route:requested'],1);assert.equal(m.counts['route:shared'],1);
    await route();assert.equal((await monitor()).counts['route:requested'],2); // no server response history
  });
@@ -29,6 +34,7 @@ test('server boundary uses mocked Google only',async t=>{
  await t.test('invalid payloads, past driving dates and upstream auth failures remain failures',async()=>{
    assert.equal((await route({})).status,400);
    assert.equal((await route({...args,mode:'DRIVE',departure:'2020-01-01T00:00:00Z'})).status,422);
+   assert.equal((await route({...args,departure:'2020-01-01T00:00:00Z'})).status,422);
    assert.equal((await route({...args,from:{lat:0,lng:127}})).status,502);
  });
  await t.test('client cancellation reaches the upstream request',async()=>{

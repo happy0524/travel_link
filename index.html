@@ -1,14 +1,124 @@
-﻿<!doctype html>
-<html lang="ko"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Travel Link · 하루를 연결하다</title><link rel="stylesheet" href="/src/styles.css"></head>
-<body>
-<header><a class="brand" href="/"><span class="brand-mark">↗</span> travel link<span class="brand-sub">나만의 속도로, 하루를 연결하다</span></a><span class="badge" id="source-badge">SEOUL / DEMO</span><button id="service">Google 지도 연결</button></header>
-<div class="toolbar"><label>여행 날짜<input id="date" type="date" required></label><span id="weekday"></span><label>출발 시간<input id="time" type="time" value="09:00" required></label><div class="timezone"><small>현지 시간대</small><strong id="zone">Asia/Seoul</strong></div><form id="search-form"><span>⌕</span><input id="search" placeholder="어디를 가고 싶으세요?" aria-label="장소 검색" autocomplete="off"><button>검색</button><div id="results"></div></form></div>
-<main><section class="map-area" aria-label="여행 지도">
-<div id="google-map"></div><svg id="map" viewBox="0 0 1000 800" aria-label="서울 샘플 지도"></svg>
-<div class="map-heading"><span class="eyebrow">YOUR DAY, CONNECTED</span><h1>서울에서의 하루</h1><p id="map-caption">장소를 고르고, 순서를 바꾸며 여행을 그려보세요.</p></div>
-<div class="map-tools"><button id="zoom-in" aria-label="지도 확대">+</button><button id="zoom-out" aria-label="지도 축소">−</button><button id="fit" aria-label="전체 경로 보기">⌖</button></div>
-<div class="map-legend"><span class="dot"></span> 방문 장소 <span class="line"></span> 이동 방향 <span id="map-disclaimer">샘플 지도 · 선과 시간은 시연용</span></div>
-<aside id="details" class="details" hidden></aside>
-<div id="edge-settings" class="edge-settings" hidden></div>
-</section><aside class="itinerary"><div class="itinerary-heading"><div><span class="eyebrow">DAY 01</span><h2>내 여행 일정 <span id="count">0</span></h2></div><button id="sample">샘플 일정</button></div><p class="hint">카드를 드래그해 순서를 바꿔보세요.<br>첫 번째 장소가 출발점이 됩니다.</p><div id="summary" aria-live="polite"></div><div id="visits"></div><footer><strong>당신의 여행, 당신의 순서.</strong><p>경로 자동 최적화 없이 직접 계획하세요.</p><details><summary>데모 검증 도구</summary><label>경로 응답<select id="scenario"><option value="normal">정상 샘플</option><option value="no-transit">대중교통 없음 → 자동차</option><option value="no-routes">모든 경로 없음</option><option value="error">요청 실패 (자동 전환 안 함)</option></select></label></details></footer></aside></main>
+<!doctype html>
+<html lang="en"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Travel Link</title><link rel="icon" href="/public/assets/logo1.png"><link rel="stylesheet" href="/src/styles.css"><link rel="stylesheet" href="/src/planner.css"><link rel="stylesheet" href="/src/mapbox.css"><link rel="stylesheet" href="/src/tree.css"></head>
+<body class="arrival-screen">
+<header class="wood-panel">
+ <a class="brand" href="/"><span class="brand-mark" aria-hidden="true"></span> Travel link</a>
+ <div class="toolbar">
+  <div class="schedule-field"><span class="field-caption">Travel date <small id="weekday"></small></span>
+   <button id="open-date" class="schedule-trigger" type="button" aria-label="Choose travel date" aria-haspopup="dialog" aria-controls="date-popover" aria-expanded="false"></button>
+   <input id="date" type="hidden">
+  </div>
+  <div class="schedule-field"><span class="field-caption">Departure time</span>
+   <button id="open-time" class="schedule-trigger" type="button" aria-label="Choose departure time" aria-haspopup="dialog" aria-controls="time-popover" aria-expanded="false"></button>
+   <input id="time" type="hidden" value="09:00">
+  </div>
+  <div class="timezone"><small>Local time zone</small><strong id="zone">America/New_York</strong></div>
+ </div>
+ <span class="badge" id="source-badge">MAPBOX</span>
+ <div class="map-provider-picker"><button id="service" type="button">Mapbox</button><div id="map-provider-menu" class="wood-panel" role="menu" aria-label="Map provider" hidden>
+ <button id="choose-google" data-map-provider="google" role="menuitemradio" aria-checked="false">Google Maps</button>
+ <button id="choose-mapbox" data-map-provider="mapbox" role="menuitemradio" aria-checked="true">Mapbox</button>
+ </div></div>
+ <div class="map-search"><form id="search-form"><input id="search" placeholder="Search places" aria-label="Search places" autocomplete="off"><button>Search</button></form></div>
+ <div class="trip-actions"><button id="my-trips" type="button" aria-haspopup="dialog">My trips</button><button id="save-status" type="button" disabled>Save trip</button></div>
+</header>
+<section id="date-popover" class="wood-panel schedule-popover" role="dialog" aria-label="Choose travel date" hidden></section>
+<section id="time-popover" class="wood-panel schedule-popover" role="dialog" aria-label="Choose departure time" hidden></section>
+<main>
+<aside id="place-panel" class="wood-panel" aria-label="Place search and details" hidden>
+ <div class="place-panel-nav"><button id="back-results" type="button" hidden>← Search results</button><button id="close-details" type="button" aria-label="Close place panel">Close ×</button></div>
+ <section id="result-panel" aria-label="Search results" hidden><h2>Search results</h2><div id="results" aria-live="polite"></div></section>
+ <section id="details" class="details" aria-label="Place details" hidden></section>
+</aside>
+<aside class="itinerary wood-panel" aria-label="Itinerary">
+ <div id="itinerary-content">
+  <div class="trip-heading"><span class="eyebrow">MY TRAVEL NOTES / DAY 01</span><h1>A day in New York</h1><p>Plan the day at your own pace</p></div>
+
+  <div class="itinerary-heading"><h2>My itinerary <span id="count">0 stops</span></h2><small id="itinerary-save" role="status"></small></div>
+  <details id="day-overview" open><summary>Day summary</summary><div id="summary" aria-live="polite"></div></details>
+  <p id="itinerary-restore" role="status" hidden></p>
+  <div class="itinerary-scroll"><div id="visits" aria-label="Stops and travel timeline"></div>
+  <footer><p id="map-disclaimer"></p></footer>
+  </div>
+ </div>
+</aside>
+<section class="map-area" aria-label="Travel map">
+<div id="google-map" aria-label="Google Maps"></div><div id="mapbox-map" aria-label="Mapbox map"></div>
+<div id="mapbox-error" role="alert" hidden><p id="mapbox-error-text"></p><button id="mapbox-retry">Try again</button><button id="mapbox-return">Open the other map</button></div>
+
+<div class="map-tools"><button id="zoom-in" aria-label="Zoom in">+</button><button id="zoom-out" aria-label="Zoom out">−</button><button id="fit" aria-label="Fit itinerary on map">⌖</button></div>
+</section></main>
+<div id="edge-settings" class="edge-settings wood-panel" role="dialog" aria-label="Travel mode" hidden></div>
+<dialog id="arrival" class="wood-panel" aria-labelledby="arrival-title">
+ <button id="trip-dialog-close" type="button" aria-label="Close trip panel" hidden>×</button>
+ <div class="arrival-scroll">
+  <section id="arrival-first">
+  <div class="arrival-heading"><h1 id="arrival-title" tabindex="-1" autofocus>A Letter from the Captain</h1></div>
+  <div id="captain-letter" class="captain-copy" lang="ko">
+   <p>안녕하세요, 여행자님.</p>
+   <p>우리의 작은 푸른 행성 B-612에 오신 것을 환영합니다.<br>저는 지구 안내선의 선장, 앙투안입니다.</p>
+   <p>착륙을 준비하기 전에 여행자님의 도착 기록을 확인하겠습니다.</p>
+  </div>
+  <form id="arrival-form">
+   <label>Traveler name <input id="arrival-name" maxlength="100" autocomplete="name"></label>
+   <label>Destination <input id="arrival-destination" maxlength="160" placeholder="Enter a city or address"></label>
+   <button id="find-destination" type="button">Find destination</button>
+   <div id="destination-results" aria-live="polite"></div>
+   <small>Destination search by Google Maps</small>
+   <p>Local time zone <output id="arrival-zone">Choose a destination</output></p>
+  <fieldset id="arrival-account">
+   <div id="arrival-number-fields">
+    <label><span lang="ko">여행자님이 가장 좋아하는 숫자는 무엇인가요?</span>
+     <input id="arrival-number" type="password" inputmode="numeric" pattern="[0-9]+" required maxlength="128" autocomplete="off" aria-describedby="arrival-number-note"></label>
+    <small id="arrival-number-note" lang="ko">여행자님들의 고유번호입니다. 다음 방문에도 같은 숫자를 입력해 주세요.</small>
+   </div>
+  </fieldset>
+  </form>
+  <p id="arrival-notice" role="status" aria-live="polite"></p>
+  <div class="captain-copy" lang="ko">
+   <p>이 행성에는 서둘러 지나치기 아까운 풍경과<br>조금 돌아가야 만날 수 있는 장소들이 많습니다.<br>
+    계획 사이에 잠시 길을 잃을 여유도 남겨두세요.<br>뜻밖의 발견은 늘 그런 틈에서 찾아오니까요.</p>
+   <p>여행을 마치면, 언젠가 당신의 이야기를 들려주세요.<br>수많은 별을 지나온 저희에게도<br>
+    여행자 한 사람이 발견한 지구는 언제나 새롭답니다.</p>
+   <p>다시 돌아오실 때까지,<br>여행자님의 계획과 귀환을 위한 작은 불빛을 지켜두겠습니다.</p>
+   <p>부디 편안하고 즐거운 여행 되시길.</p>
+   <p id="captain-signature">앙투안 선장 드림<br>Travel Link · 지구 방문자 안내부</p>
+  </div>
+  <button id="arrival-begin" type="submit" form="arrival-form">Begin my journey</button>
+  <button id="trip-dialog-cancel" type="button" hidden>Cancel</button>
+  </section>
+  <section id="trip-library" aria-labelledby="trip-library-title" hidden>
+   <h2 id="trip-library-title">Previous trips</h2>
+   <div id="previous-trips" class="wood-panel"></div>
+   <div class="trip-library-actions"><button type="button" id="new-journey">Start a new trip</button><button type="button" id="arrival-logout">Sign out</button></div>
+   <details id="arrival-migration" hidden>
+    <summary>Link your traveler profile</summary>
+    <form id="arrival-migrate-form">
+     <label>Traveler name <input id="migration-name" required maxlength="100" autocomplete="name"></label>
+     <label>Favorite number <input id="migration-number" type="password" inputmode="numeric" pattern="[0-9]+" required maxlength="128" autocomplete="off"></label>
+     <button type="submit">Link profile</button>
+    </form>
+   </details>
+  </section>
+  <section id="arrival-legacy-access" hidden>
+   <h2 id="arrival-legacy-title">Access previous email-based trips</h2>
+   <form id="arrival-legacy-form">
+    <label>Previous email <input id="legacy-email" type="email" required maxlength="254" autocomplete="email"></label>
+    <label>Credential type <select id="legacy-method"><option value="email-number-login">Favorite number</option><option value="legacy-login">Password</option></select></label>
+    <label>Previous credential <input id="legacy-secret" type="password" required maxlength="128" autocomplete="current-password"></label>
+    <button type="submit">Open saved trips</button>
+   </form>
+   <button id="arrival-back" type="button">Back to the letter</button>
+  </section>
+  <section id="arrival-second" aria-label="Arrival confirmation" tabindex="-1" hidden>
+   <div class="captain-copy" lang="ko">
+    <p><strong data-letter="name"></strong> 여행자님,<br>
+    이번 목적지는 <strong data-letter="destination"></strong>입니다.</p>
+    <p>그럼 부디 즐거운 여행이 되시길!</p>
+    <p>행운을 빌겠습니다!</p>
+    <p>앙투안 선장 드림</p>
+   </div>
+  </section>
+ </div>
+</dialog>
 <div id="notice" role="status" aria-live="polite"></div><script type="module" src="/src/app.js"></script></body></html>

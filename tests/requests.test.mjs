@@ -1,9 +1,9 @@
 import {test} from 'node:test';
 import assert from 'node:assert/strict';
 import {calculate,reconcile,wallStart} from '../src/engine.js';
-import {places} from '../src/data.js';
-import {DemoProvider} from '../src/providers.js';
-import {EfficientRouteProvider,PlacesProvider,routeKey,timeZoneKey} from '../src/efficient-providers.js';
+import {places} from './schedule-places.mjs';
+import {routeFixture} from './schedule-places.mjs';
+import {canonicalZone,EfficientRouteProvider,PlacesProvider,routeKey,timeZoneKey} from '../src/efficient-providers.js';
 import {RequestPool,createMonitor,debounce} from '../src/requests.js';
 import {requestConfig} from '../src/request-config.js';
 
@@ -77,12 +77,12 @@ test('route TTL expires and LRU bounds entries; changing active order drops hist
  s.tick(11);await s.provider.route(a);assert.equal(s.calls.length,n+1);assert.ok(s.provider.pool.cache.size<=2);
  s.provider.setActive([]);assert.equal(s.provider.pool.cache.size,0);
 });
-test('failed requests are retried; no-route is reused but retains transit fallback',async()=>{
+test('failed requests are retried and transit no-route is reused',async()=>{
  let calls=0;const p=new EfficientRouteProvider({route:async()=>{calls++;return {status:'error'};}});
  await p.route(routeArgs());await p.route(routeArgs());assert.equal(calls,2);
  const seen=[];const q=new EfficientRouteProvider({route:async a=>{seen.push(a.mode);return a.mode==='TRANSIT'?{status:'no-route'}:{status:'ok',minutes:8};}});
  const v=visits().slice(0,2),args={visits:v,segments:reconcile(v),date:'2026-11-15',time:'09:00',provider:q};
- assert.equal((await calculate(args)).routes['0>1'].fallback,true);await calculate(args);assert.deepEqual(seen,['TRANSIT','DRIVE']);
+ assert.equal((await calculate(args)).routes['0>1'].status,'no-route');await calculate(args);assert.deepEqual(seen,['TRANSIT']);
 });
 test('aborted provider ignoring signal cannot return a stale completed schedule',async()=>{
  const c=new AbortController();let finish;const v=visits().slice(0,2);
@@ -112,6 +112,18 @@ test('search skips empty/short input, normalizes whitespace, deduplicates and re
  await p.search('Seoul cafe');assert.equal(calls.search,1);assert.equal(calls.zone,0);assert.equal(calls.detail,0);
  assert.ok(!calls.fields[0].includes('photos'));assert.ok(!calls.fields[0].includes('regularOpeningHours'));
 });
+test('a place search cache does not reuse results biased toward a different destination',async()=>{
+ const {p,calls}=placeSetup(),ny={lat:40.71,lng:-74},seoul={lat:37.56,lng:126.98};
+ await p.search('Times Square',{locationBias:ny});
+ await p.search('Times Square',{locationBias:{...ny}});
+ await p.search('Times Square',{locationBias:seoul});
+ assert.equal(calls.search,2);
+});
+test('zone comparisons normalize aliases and reject numeric offsets',()=>{
+ assert.equal(canonicalZone('US/Eastern'),canonicalZone('America/New_York'));
+ assert.notEqual(canonicalZone('Asia/Seoul'),canonicalZone('America/New_York'));
+ for(const invalid of [undefined,'-05:00','+09:00','Unknown/Zone'])assert.equal(canonicalZone(invalid),null);
+});
 test('repeated inspection shares details and timezone; confirmed IANA zone reused',async()=>{
  const {p,calls}=placeSetup(),[place]=await p.search('Seoul');p.retain([place]);
  const results=await Promise.all([p.inspect(place),p.inspect(place)]);await p.inspect(place);
@@ -128,9 +140,9 @@ test('coordinate key absorbs numerical noise without grouping neighbouring bound
  assert.notEqual(timeZoneKey(p),timeZoneKey({...p,lat:p.lat+1e-7}));
  assert.notEqual(timeZoneKey(p),timeZoneKey({...p,id:'q'}));
 });
-test('demo routes make no fetch requests',async()=>{
- const original=globalThis.fetch;globalThis.fetch=()=>{throw Error('Google request in demo');};
- try{const p=new EfficientRouteProvider(new DemoProvider()),v=visits();await calculate({visits:v,segments:reconcile(v),date:'2026-11-15',time:'09:00',provider:p});}
+test('the unit route fixture is isolated from the network',async()=>{
+ const original=globalThis.fetch;globalThis.fetch=()=>{throw Error('Unexpected network request');};
+ try{const p=new EfficientRouteProvider(routeFixture()),v=visits();await calculate({visits:v,segments:reconcile(v),date:'2026-11-15',time:'09:00',provider:p});}
  finally{globalThis.fetch=original;}
 });
 test('monitor is disabled by default and reports only bounded request metadata',()=>{

@@ -10,5 +10,11 @@ globalThis.fetch=async(url,{signal,body}={})=>{
  if(target.hostname==='maps.googleapis.com')return {json:async()=>({status:'OK',timeZoneId:'Asia/Seoul'})};
  const args=JSON.parse(body);
  if(args.origin.location.latLng.latitude===0)return {ok:false,status:403,json:async()=>({error:'fixture'})};
- return {ok:true,status:200,json:async()=>({routes:[{duration:'600s',polyline:{encodedPolyline:'fixture'},legs:[{steps:[{travelMode:args.travelMode}]}]}]})};
+ const steps=args.travelMode==='TRANSIT'?[
+   {travelMode:'WALK',distanceMeters:100,staticDuration:'90s'},
+   {travelMode:'TRANSIT',transitDetails:{stopDetails:{departureStop:{name:'First Stop'},arrivalStop:{name:'Second Stop'}},
+     transitLine:{nameShort:'A',vehicle:{type:'SUBWAY'},agencies:[{name:'Transit Authority',uri:'https://example.com'}]}}}
+ ]:[{travelMode:args.travelMode}];
+ return {ok:true,status:200,json:async()=>({routes:[{duration:'600s',distanceMeters:800,polyline:{encodedPolyline:'fixture'},
+   localizedValues:{transitFare:{text:'$3.00'}},legs:[{steps}]}]})};
 };

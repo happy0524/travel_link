@@ -1,30 +1,37 @@
+import {destination} from './new-york.js';
+import {mapPalette as p} from './map-palette.js';
+const color=(featureType,elementType,value)=>({featureType,elementType,stylers:[{color:value}]});
 // Embedded JSON styling applies only when no cloud Map ID is configured.
 export const greenMapStyles = [
-  {elementType:'geometry',stylers:[{color:'#C8D4CB'}]},
-  {elementType:'labels.text.fill',stylers:[{color:'#143B2C'}]},
-  {elementType:'labels.text.stroke',stylers:[{color:'#C8D4CB'}]},
+  color('all','geometry',p.land),
+  color('all','labels.text.fill',p.label),
+  color('all','labels.text.stroke',p.halo),
+  color('administrative.locality','labels.text.fill',p.majorLabel),
   {elementType:'labels.icon',stylers:[{visibility:'off'}]},
-  {featureType:'landscape.man_made',elementType:'geometry.fill',stylers:[{color:'#B4C2B8'}]},
-  {featureType:'landscape.man_made',elementType:'geometry.stroke',stylers:[{color:'#789282'}]},
-  {featureType:'administrative',elementType:'geometry.stroke',stylers:[{color:'#789282'}]},
+  // Google groups built-up land and buildings here. Keep the shared land fill at city scale.
+  color('landscape.man_made','geometry.fill',p.land),
+  color('landscape.man_made','geometry.stroke',p.buildingOutline),
   {featureType:'administrative.land_parcel',elementType:'labels',stylers:[{visibility:'off'}]},
   {featureType:'poi',elementType:'labels',stylers:[{visibility:'off'}]},
   {featureType:'poi.attraction',elementType:'labels.text',stylers:[{visibility:'on'}]},
-  {featureType:'poi.park',elementType:'geometry',stylers:[{color:'#4D775F'}]},
+  color('poi.business','geometry.fill',p.commercial),
+  color('poi.park','geometry.fill',p.park),
   {featureType:'transit',elementType:'labels',stylers:[{visibility:'off'}]},
-  {featureType:'road',elementType:'geometry.fill',stylers:[{color:'#6F8F7D'}]},
-  {featureType:'road',elementType:'geometry.stroke',stylers:[{color:'#789282'}]},
+  color('road','geometry.fill',p.street),
+  color('road','labels.text.fill',p.roadLabel),
+  color('road','labels.text.stroke',p.majorLabel),
+  color('road','geometry.stroke',p.buildingOutline),
   {featureType:'road.local',elementType:'labels',stylers:[{visibility:'off'}]},
-  {featureType:'road.highway',elementType:'geometry.fill',stylers:[{color:'#164F3B'}]},
-  {featureType:'road.highway',elementType:'geometry.stroke',stylers:[{color:'#164F3B'}]},
-  {featureType:'road.arterial',elementType:'geometry.fill',stylers:[{color:'#164F3B'}]},
-  {featureType:'water',elementType:'geometry',stylers:[{color:'#B6C8C1'}]},
+  color('road.highway','geometry.fill',p.majorRoad),
+  color('road.highway','geometry.stroke',p.majorRoad),
+  color('road.arterial','geometry.fill',p.secondaryRoad),
+  color('water','geometry',p.water),
   {featureType:'water',elementType:'labels.text',stylers:[{visibility:'off'}]},
 ];
 export function mapOptions(mapId='') {
-  return {center:{lat:37.573,lng:126.987},zoom:14,mapTypeId:'roadmap',
+  return {center:destination.center,zoom:destination.zoom,mapTypeId:'roadmap',
     mapTypeControl:false,streetViewControl:false,fullscreenControl:false,clickableIcons:true,
-    ...(mapId.trim()?{mapId:mapId.trim()}:{styles:greenMapStyles})};
+    ...(mapId.trim()?{mapId:mapId.trim()}:{renderingType:'RASTER',styles:greenMapStyles})};
 }
 
 // Screen-space chevrons, independent of Google APIs and route fetching.

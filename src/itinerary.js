@@ -2,7 +2,14 @@ import {segmentKey} from './engine.js';
 
 // Provider IDs identify destinations; visit IDs continue to identify directed segments.
 export function findDestination(visits, place) {
-  return visits.find(visit => visit.place.id === place.id && visit.place.source === place.source);
+  return visits.find(visit => {
+    const p=visit.place;
+    if(p.id===place.id&&p.source===place.source)return true;
+    // Tile and Search Box IDs may differ for the same Mapbox POI.
+    if(!p.source?.startsWith('mapbox')||!place.source?.startsWith('mapbox'))return false;
+    const normalize=s=>(s||'').trim().toLocaleLowerCase();
+    return p.id===place.id||(normalize(p.name)===normalize(place.name)&&Math.hypot((p.lat-place.lat)*111000,(p.lng-place.lng)*84000)<50);
+  });
 }
 
 export function summarize(visits, result) {
@@ -20,6 +27,13 @@ export function summarize(visits, result) {
       visits.every(visit => !visit.wait) ? 0 : null,
     end: rowsMatch && Number.isFinite(result.rows.at(-1)?.departure) ? result.rows.at(-1).departure : null,
   };
+}
+
+export function totalDistance(visits,result) {
+  if(visits.length<2)return null;
+  const routes=visits.slice(1).map((visit,i)=>result.routes[segmentKey(visits[i],visit)]);
+  return routes.every(route=>route?.status==='ok'&&Number.isFinite(route.distance))
+    ?routes.reduce((total,route)=>total+route.distance,0):null;
 }
 
 export function compareMetrics(before, after) {

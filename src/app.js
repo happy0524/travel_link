@@ -1,73 +1,118 @@
-import {places,defaults,modes} from './data.js';
-import {calculate,reconcile,segmentKey,stamp} from './engine.js';
-import {DemoProvider,LiveProvider} from './providers.js';
-import {findDestination,summarize,ReorderComparison} from './itinerary.js';
-import {EfficientRouteProvider,PlacesProvider,loadGoogleMaps} from './efficient-providers.js';
+import {defaults,modes} from './data.js';
+import {destination} from './new-york.js';
+import {calculate,reconcile,segmentKey,stamp,wallStart} from './engine.js';
+import {LiveProvider} from './providers.js';
+import {findDestination,summarize,totalDistance,ReorderComparison} from './itinerary.js';
+import {canonicalZone,EfficientRouteProvider,PlacesProvider,loadGoogleMaps} from './efficient-providers.js';
 import {requestConfig} from './request-config.js';
 import {createMonitor,debounce} from './requests.js';
 import {mapOptions,routeArrows} from './map-style.js';
 import {inkRoute,inkNode} from './map-ink.js';
+import {MapboxRenderer,loadMapbox} from './mapbox-renderer.js';
+import {validMapboxPlace} from './mapbox-eucalyptus.js';
+import {MapboxDirections} from './mapbox-directions.js';
+import {MapboxSearch} from './mapbox-search.js';
+import {findGoogleCandidates,createGoogleWidget,rememberGooglePlaceId} from './google-place-details.js';
+import {decorateWoodPanels,decorateSelectedVisit} from './wood-panels.js';
+import {setupSchedulePickers} from './schedule-pickers.js';
+import {formatDuration,locale,ui} from './ui-copy.js';
+import {mapPalette} from './map-palette.js';
+import {dateInZone,setupOnboarding} from './onboarding.js';
+import {referenceForPlace,restorePlaceId,stopReference} from './trip-stops.js';
+const mapboxSearch=new MapboxSearch(()=>config.mapboxToken);
+const delayedMapboxSearch=debounce(searchMapbox,350);
 const $=s=>document.querySelector(s);
 const esc=s=>String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 let visits=[],segments={},result={rows:[],routes:{}},selected=null,selectedPlace=null,edge=null,loading=false;
-let controller,revision=0,view=[0,0,1000,800],dragId=null,live=false,gmap=null,overlay=null,config={},searchRevision=0,livePlaces=[];
+let controller,revision=0,dragId=null,gmap=null,overlay=null,config={},searchRevision=0,livePlaces=[];
 const comparison=new ReorderComparison();
 let comparisonTimer;
+let googleDetailsController;
+let mapProvider='mapbox',mapboxRenderer=null,mapSwitch=0,pendingProvider=null;
+let tripDestination=destination;
 const monitor=createMonitor(requestConfig.instrumentation);
 const placesProvider=new PlacesProvider({monitor});
 const liveProvider=new EfficientRouteProvider(new LiveProvider(),{monitor});
-let demoProvider,demoScenario,placeRevision=0,placeController,searchController;
+const mapboxDirections=new EfficientRouteProvider(new MapboxDirections(()=>config.mapboxToken),{monitor});
+let placeRevision=0,placeController,searchController;
 const delayedCalculation=debounce(runCalculation,requestConfig.editDebounceMs);
 const delayedSearch=debounce(()=>searchPlaces('search-submit'),requestConfig.searchDebounceMs);
-function provider(){
- if(live)return liveProvider;
- const scenario=$('#scenario').value;
- if(!demoProvider||demoScenario!==scenario){demoProvider?.pool.clear();demoScenario=scenario;demoProvider=new EfficientRouteProvider(new DemoProvider(scenario));}
- return demoProvider;
-}
+const googleRoutes={
+ setActive:(...args)=>liveProvider.setActive(...args),
+ route:args=>{
+  const points=[args.from,args.to];
+  if(points.some(p=>!hasLocation(p)))return Promise.resolve({status:'unsupported',message:'Restore or relink the stop before calculating this route.'});
+  return points.some(p=>p.source?.startsWith('mapbox'))
+   ?Promise.resolve({status:'unsupported',message:ui.mapboxGoogleLocation})
+   :liveProvider.route(args);
+ }
+};
+function provider(){return mapProvider==='mapbox'?mapboxDirections:googleRoutes;}
 function retainPlaces(){placesProvider.retain([...livePlaces,...visits.map(v=>v.place),...(selectedPlace?[selectedPlace]:[])]);}
-const dateParts=new Intl.DateTimeFormat('en-CA',{timeZone:'Asia/Seoul',year:'numeric',month:'2-digit',day:'2-digit'}).formatToParts(new Date());
-const dp=Object.fromEntries(dateParts.map(p=>[p.type,p.value]));
-$('#date').value=dp.year+'-'+dp.month+'-'+dp.day;
+$('#date').value=dateInZone(destination.zone);
+let schedule={date:$('#date').value,time:$('#time').value},relinkStop=null;
 const toast=message=>{$('#notice').textContent=message;$('#notice').style.display='block';clearTimeout(toast.timer);toast.timer=setTimeout(()=>$('#notice').style.display='none',6500);};
-function zone(){return visits[0]?.place.zone||defaults.zone;}
+const hasLocation=p=>Number.isFinite(p?.lat)&&Number.isFinite(p?.lng);
+function zone(){return tripDestination.zone;}
 function add(place){
  const existing=findDestination(visits,place);
  if(existing){revealExisting(existing);return;}
- if(!place.zone){toast('장소의 시간대를 확인할 수 없어 추가할 수 없습니다.');return;}
- if(visits.length&&zone()!==place.zone){toast('현재 일정은 '+zone()+'입니다. 다른 시간대의 장소는 같은 일정에 추가할 수 없습니다.');return;}
- const v={id:crypto.randomUUID(),place,stay:visits.length?defaults.stay:defaults.firstStay,wait:false};
- visits.push(v);selected=v.id;refresh();updateAddAction();focusPlace(place);toast(place.name+'을(를) 일정에 추가했습니다.');
+ if(!canonicalZone(place.zone)){selectPlace(place);return;}
+ const mismatch=placeZoneMismatch(place);
+ if(mismatch){toast(mismatch);return;}
+ const missing=visits.find(v=>v.id===relinkStop&&v.restoreStatus==='relink');
+ const v=missing||{id:crypto.randomUUID(),stay:defaults.stay,wait:false};
+ v.place=place;
+ v.reference=referenceForPlace(place);v.restoreStatus=null;relinkStop=null;
+ if(!missing)visits.push(v);
+ selected=v.id;refresh();updateAddAction();focusPlace(place);
+ toast(place.source?.startsWith('mapbox')&&!place.googlePlaceId
+   ?'Stop added. Link it to a Google place to restore its location on your next visit.'
+   :place.name+' was added to the itinerary.');
 }
 function revealExisting(visit){
- selectVisit(visit.id,true);focusPlace(visit.place);
- toast('이미 일정에 추가된 장소입니다.');
+ selectVisit(visit.id);focusPlace(visit.place);
+ document.querySelector('[data-visit="'+visit.id+'"]')?.scrollIntoView({block:'nearest'});
+ toast('This place is already in your itinerary.');
 }
 function updateAddAction(){
  const button=$('#add');if(!button||!selectedPlace)return;
  const added=!!findDestination(visits,selectedPlace);
+ const mismatch=!added&&placeZoneMismatch(selectedPlace);
+ button.disabled=Boolean(mismatch);
+ const note=button.parentElement.querySelector('.place-zone-note');
+ if(note){note.hidden=!mismatch;note.textContent=mismatch||'';}
  // Keep this focusable so an attempted add can reveal the existing card.
- button.textContent=added?'이미 추가됨 · 일정에서 보기':'＋ 일정에 추가';
+ button.textContent=!added&&relinkStop?'Link to this stop':added?ui.added:ui.add;
  button.classList.toggle('already-added',added);
 }
-function sample(){
- if(live){toast('샘플 일정은 데모 모드에서 사용할 수 있습니다.');return;}
- visits=[];segments={};[places[0],places[1],places[2],places[3]].forEach(p=>visits.push({id:crypto.randomUUID(),place:p,stay:visits.length?60:0,wait:false}));
- selected=visits[0].id;selectedPlace=null;edge=null;view=[0,0,1000,800];refresh();renderDetails();
+function placeZoneMismatch(place){
+ const actual=canonicalZone(place.zone),expected=canonicalZone(zone());
+ return actual&&expected&&actual!==expected
+  ?'This place is in '+place.zone+'. Your itinerary is in '+zone()+'.':'';
 }
+function savedStops(){
+ return visits.map((visit,index)=>({
+  id:visit.id,stay:visit.stay,wait:visit.wait,
+  ...(visit.reference||referenceForPlace(visit.place)),
+  mode:index<visits.length-1?segments[segmentKey(visit,visits[index+1])]?.mode:undefined
+ }));
+}
+function saveSnapshot(){return {...schedule,zone:zone(),stops:savedStops()};}
 function reorder(id,targetIndex){
  const i=visits.findIndex(v=>v.id===id);if(i<0||i===targetIndex||targetIndex<0||targetIndex>=visits.length)return;
  const oldZone=zone();const [v]=visits.splice(i,1);visits.splice(targetIndex,0,v);
- if(oldZone!==zone())toast('시간대가 '+zone()+'로 변경되었습니다. 입력한 날짜와 시간은 현지 시각으로 유지합니다.');
+ if(oldZone!==zone())toast('Time zone changed to '+zone()+'. The date and time are still shown in local time.');
  refresh('reorder');
 }
 function refresh(reason='edit'){
  delayedCalculation.cancel();
  controller?.abort();controller=new AbortController();const rev=++revision;
  const comparisonRevision=comparison.begin(reason);clearTimeout(comparisonTimer);
- segments=reconcile(visits,segments);if(edge&&!segments[edge])edge=null;
+ segments=reconcile(visits,segments,defaults.mode);if(edge&&!segments[edge])edge=null;
+ if(!['provider','retry'].includes(reason))onboarding.save(saveSnapshot());
  result={rows:[],routes:{}};loading=true;render();
- if(!$('#date').value||!$('#time').value){loading=false;finishComparison(comparisonRevision);render();toast('여행 날짜와 출발 시간을 입력하세요.');return;}
+ if(!$('#date').value||!$('#time').value){loading=false;finishComparison(comparisonRevision);render();toast('Choose a travel date and departure time.');return;}
  const p=provider();p.setActive(visits,segments);retainPlaces();
  const args={reason,rev,comparisonRevision,signal:controller.signal,provider:p};
  if(['stay','wait','date','time','mode'].includes(reason))delayedCalculation(args);else runCalculation(args);
@@ -75,29 +120,43 @@ function refresh(reason='edit'){
 async function runCalculation({reason,rev,comparisonRevision,signal,provider}){
  if(rev!==revision)return;
  try{
- const fresh=await calculate({visits:structuredClone(visits),segments:structuredClone(segments),date:$('#date').value,time:$('#time').value,provider,signal,reason});
+ const fresh=await calculate({visits:structuredClone(visits),segments:structuredClone(segments),...schedule,zone:zone(),provider,signal,reason});
  if(rev!==revision){monitor.record({api:'route',reason,id:'itinerary',status:'stale-discarded'});return;}result=fresh;loading=false;finishComparison(comparisonRevision);render();
- }catch(e){if(e.name!=='AbortError'&&rev===revision){loading=false;finishComparison(comparisonRevision);render();toast('일정 계산 중 오류가 발생했습니다. 다시 편집해 주세요.');}}
+ }catch(e){if(e.name!=='AbortError'&&rev===revision){loading=false;finishComparison(comparisonRevision);render();toast(e instanceof RangeError?e.message:'The itinerary could not be calculated. Try editing it again.');}}
 }
 function finishComparison(token){
  comparison.complete(token,summarize(visits,result));
  if(comparison.value)comparisonTimer=setTimeout(()=>{comparison.dismiss(token);renderSummary();},12000);
 }
+function scheduleTime(minute){
+ if(!Number.isFinite(minute))return ui.unconfirmed;
+ const days=Math.floor(minute/1440)-Math.floor(wallStart($('#date').value,'00:00')/1440);
+ return (days===1?ui.nextDay+' ':days>1?`+${days} days `:'')+stamp(minute).slice(-5);
+}
 function renderSummary(){
  const metrics=summarize(visits,result),state=comparison.value;
- const duration=value=>value===null?'미확정':value+'분';
- const travel=loading&&visits.length>1?'계산 중…':duration(metrics.travel);
- const waiting=loading&&visits.some(v=>v.wait)?'계산 중…':duration(metrics.waiting);
+ const start=wallStart($('#date').value,$('#time').value);
+ const distance=totalDistance(visits,result);
+ const pending=ui.calculating;
+ const travel=loading&&visits.length>1?pending:formatDuration(metrics.travel);
+ const end=visits.length?(loading?pending:scheduleTime(metrics.end)):'—';
+ const elapsed=visits.length?(loading?pending:formatDuration(result.elapsed)):'—';
  let change='';
- if(state?.status==='pending')change='새 경로 계산 후 이동시간을 비교합니다…';
- if(state?.status==='unavailable')change='효율 비교 불가 · 경로 시간 미확정';
+ if(state?.status==='pending')change='Comparing travel times after recalculating the routes…';
+ if(state?.status==='unavailable')change='Comparison unavailable while travel times are unconfirmed.';
  if(state?.status==='ready'){
    const delta=state.travelDelta;
-   change='직전 순서 대비 이동 '+(delta===0?'변화 없음':Math.abs(delta)+'분 '+(delta<0?'단축':'증가'));
-   if(state.endDelta)change+='<small>종료 '+Math.abs(state.endDelta)+'분 '+(state.endDelta<0?'빨라짐':'늦어짐')+' · 체류·대기 포함</small>';
+   change=delta===0?'Travel time unchanged':`Travel time ${formatDuration(Math.abs(delta))} ${delta<0?'shorter':'longer'}`;
+   if(state.endDelta)change+=`<small>Ends ${formatDuration(Math.abs(state.endDelta))} ${state.endDelta<0?'earlier':'later'} · includes visits and waiting</small>`;
  }
+ const metric=(key,label,value,display)=>`<div><dt>${label}</dt><dd data-metric="${key}" data-value="${value??''}">${esc(display)}</dd></div>`;
  $('#summary').setAttribute('aria-busy',String(loading));
- $('#summary').innerHTML='<div class="summary-caption">'+(loading?'◌ 경로와 시간을 계산하고 있습니다…':visits.length+'개 장소 · '+(live?'Google 경로':'시연용 추정'))+'</div><dl class="metrics"><div><dt>총 이동</dt><dd data-metric="travel" data-value="'+(loading?'':metrics.travel??'')+'">'+travel+'</dd></div><div><dt>총 체류</dt><dd data-metric="stay" data-value="'+metrics.stay+'">'+duration(metrics.stay)+'</dd></div><div><dt>적용 대기</dt><dd data-metric="waiting" data-value="'+(loading?'':metrics.waiting??'')+'">'+waiting+'</dd></div><div><dt>예상 종료</dt><dd data-metric="end" data-value="'+(loading?'':metrics.end??'')+'">'+(loading?'계산 중…':visits.length?esc(stamp(metrics.end)):'—')+'</dd></div></dl>'+(change?'<div class="comparison" data-status="'+state.status+'">'+change+'</div>':'');
+ $('#summary').innerHTML=`<div class="summary-caption"><strong>${esc($('#date').value||'Date unconfirmed')}</strong><span>${zone()}</span></div>
+  <dl class="day-range">${metric('start',ui.start,start,$('#time').value||'—')}${metric('end',ui.estimatedEnd,metrics.end,end)}</dl>
+  <dl class="metrics">${metric('elapsed',ui.totalDuration,result.elapsed,elapsed)}${metric('travel',ui.travelTime,metrics.travel,travel)}${metric('stay',ui.visitTime,metrics.stay,formatDuration(metrics.stay))}
+  ${metric('distance',ui.totalDistance,distance,distance!==null?(distance/1000).toFixed(2)+' km':loading&&visits.length>1?pending:visits.length>1?ui.unconfirmed:'—')}
+  ${metrics.waiting>0||visits.some(v=>v.wait)?metric('waiting',ui.waitTime,metrics.waiting,loading?pending:formatDuration(metrics.waiting)):''}</dl>
+  ${change?'<div class="comparison" data-status="'+state.status+'">'+change+'</div>':''}`;
 }
 function render(){
  const focused=document.activeElement;
@@ -107,83 +166,282 @@ function render(){
    const attr=attrs.find(a=>focused.hasAttribute(a));
    if(attr)focusSelector='['+attr+'="'+focused.getAttribute(attr)+'"]'+(focused.hasAttribute('data-delta')?'[data-delta="'+focused.dataset.delta+'"]':'');
  }
- $('#zone').textContent=zone();$('#count').textContent=visits.length;
- $('#weekday').textContent=$('#date').value?new Intl.DateTimeFormat('ko',{weekday:'long',timeZone:'UTC'}).format(new Date($('#date').value+'T00:00:00Z')):'';
+ $('#zone').textContent=zone();$('#count').textContent=visits.length+(visits.length===1?' stop':' stops');
+ const restoreNote=$('#itinerary-restore');
+ const missing=visits.filter(v=>v.restoreStatus==='relink'||v.place.source?.startsWith('mapbox')&&!restorePlaceId(v.reference||referenceForPlace(v.place))).length;
+ const retries=visits.filter(v=>v.restoreStatus==='retry').length;
+ restoreNote.hidden=!(missing||retries);
+ restoreNote.textContent=[missing?missing+' '+(missing===1?'stop needs a saved place link':'stops need saved place links'):'',retries?retries+' '+(retries===1?'place lookup needs a retry':'place lookups need a retry'):''].filter(Boolean).join(' · ');
+ $('#weekday').textContent=$('#date').value?new Intl.DateTimeFormat(locale,{weekday:'short',timeZone:'UTC'}).format(new Date($('#date').value+'T00:00:00Z')):'';
  renderSummary();
- $('#visits').innerHTML=visits.length?visits.map((v,i)=>{
+ $('#visits').innerHTML=visits.length?visits.map((original,i)=>{
+ const restricted=original.place.source!=='unavailable'&&(mapProvider==='mapbox'?!validMapboxPlace(original.place):original.place.source?.startsWith('mapbox'));
+ const v=restricted?{...original,place:{...original.place,name:mapProvider==='mapbox'?'View this place in Google Maps':'View this place in Mapbox',category:'Provider restriction'}}:original;
  const row=result.rows[i],k=i?segmentKey(visits[i-1],v):null,r=k?result.routes[k]:null;
- const segment=i?'<button class="segment '+(edge===k?'active':'')+'" data-edge="'+k+'">'+esc(modes[r?.mode||segments[k].mode])+' · '+(loading?'계산 중…':r?.status==='ok'?r.minutes+'분':'경로 확인 필요')+'<small>'+esc(r?.fallback?'대중교통 없음 확인 → 자동차 자동 전환':r?.details||r?.message||'구간을 눌러 이동수단 변경')+'</small></button>':'';
- const warnings=row?.warnings.map(w=>'<div class="warning">⚠ '+esc(w)+'</div>').join('')||'';
- return segment+'<article class="visit '+(selected===v.id?'selected':'')+'" draggable="true" tabindex="0" data-visit="'+v.id+'" aria-label="'+(i+1)+'번 '+esc(v.place.name)+'">'+
- '<div class="visit-head"><span class="grip" title="드래그하여 순서 변경">⠿</span><span class="number">'+(i+1)+'</span><div class="visit-title"><h3 title="'+esc(v.place.name)+'">'+esc(v.place.name)+'</h3><p class="visit-category">'+(i===0?'<span class="start-label">출발</span> ':'')+esc(v.place.category)+'</p></div>'+
- '<div class="visit-actions"><div class="move-buttons"><button data-move="'+v.id+'" data-delta="-1" '+(i===0?'disabled':'')+' aria-label="'+esc(v.place.name)+' 위로">↑</button><button data-move="'+v.id+'" data-delta="1" '+(i===visits.length-1?'disabled':'')+' aria-label="'+esc(v.place.name)+' 아래로">↓</button></div><button class="remove" data-remove="'+v.id+'" aria-label="'+esc(v.place.name)+' 삭제">×</button></div></div>'+
- '<div class="visit-info"><div class="times"><div><span>도착</span><time>'+esc(loading?'계산 중…':stamp(row?.arrival))+'</time></div><div><span>출발</span><time>'+esc(loading?'계산 중…':stamp(row?.departure))+'</time></div></div><label class="stay-control">체류<span><input type="number" min="0" max="1440" step="1" value="'+v.stay+'" data-stay="'+v.id+'" aria-label="'+esc(v.place.name)+' 체류 시간"> 분</span></label></div>'+
- warnings+((row?.proposed||v.wait)?'<label class="waiting"><input type="checkbox" data-wait="'+v.id+'" '+(v.wait?'checked':'')+'>개장까지 대기 ('+(row?.proposed||0)+'분'+(v.wait?' 적용':' 제안')+')</label>':'')+'</article>';
- }).join(''):'<div class="empty">＋<br>가고 싶은 곳을 연결해보세요.<br><small>지도에서 장소를 눌러 일정에 추가하세요.</small></div>';
+ const segmentNote=r?.status==='ok'&&Number.isFinite(r.distance)?(r.distance/1000).toFixed(1)+' km':'';
+ const segment=i?'<div class="visit-divider" aria-hidden="true"></div><button class="segment '+(edge===k?'active':'')+'" data-edge="'+k+'"><span>'+esc(modes[r?.mode||segments[k].mode])+' · '+(loading?ui.calculating:r?.status==='ok'?formatDuration(r.minutes):ui.routeUnconfirmed)+'</span>'+(segmentNote?'<small>'+esc(segmentNote)+'</small>':'')+'</button>':'';
+ const warnings=mapProvider==='mapbox'?'':row?.warnings.map(w=>'<div class="warning">⚠ '+esc(w)+'</div>').join('')||'';
+ return segment+'<article class="visit '+(selected===v.id?'selected':'')+'" draggable="true" tabindex="0" data-visit="'+v.id+'" aria-label="Stop '+(i+1)+': '+esc(v.place.name)+'">'+
+ '<div class="visit-head"><span class="grip" title="Drag to reorder">⠿</span><span class="number">'+(i+1)+'</span><div class="visit-title"><h3 title="'+esc(v.place.name)+'">'+esc(v.place.name)+'</h3><p class="visit-category">'+(i===0?'<span class="start-label">'+ui.start+'</span> ':'')+esc(v.place.category)+'<span class="visit-stay-summary"> · '+ui.stay+' '+formatDuration(v.stay)+'</span></p></div>'+
+ '<div class="visit-actions"><div class="move-buttons"><button data-move="'+v.id+'" data-delta="-1" '+(i===0?'disabled':'')+' aria-label="Move '+esc(v.place.name)+' up">↑</button><button data-move="'+v.id+'" data-delta="1" '+(i===visits.length-1?'disabled':'')+' aria-label="Move '+esc(v.place.name)+' down">↓</button></div><button class="remove" data-remove="'+v.id+'" aria-label="Remove '+esc(v.place.name)+'">×</button></div></div>'+
+ (selected===v.id?stopActions(v):'')+
+ '<p class="visit-timeline">'+esc(loading?ui.calculating:scheduleTime(row?.arrival)+' → '+scheduleTime(row?.departure))+'</p>'+
+ '<div class="visit-info"><div class="times"><div><span>'+ui.arrival+'</span><time>'+esc(loading?ui.calculating:scheduleTime(row?.arrival))+'</time></div><div><span>'+ui.departure+'</span><time>'+esc(loading?ui.calculating:scheduleTime(row?.departure))+'</time></div></div><label class="stay-control">'+ui.stay+'<span><input type="number" min="0" max="1440" step="1" value="'+v.stay+'" data-stay="'+v.id+'" aria-label="Stay at '+esc(v.place.name)+' in minutes"> min</span></label></div>'+
+ warnings+((mapProvider!=='mapbox'&&(row?.proposed||v.wait))?'<label class="waiting"><input type="checkbox" data-wait="'+v.id+'" '+(v.wait?'checked':'')+'>Wait until opening ('+formatDuration(row?.proposed||0)+(v.wait?' applied':' suggested')+')</label>':'')+'</article>';
+ }).join(''):'<div class="empty">Your itinerary is empty.<br><small>Select a place on the map or search to add a stop.</small></div>';
+ decorateSelectedVisit($('#visits .visit.selected'));
  renderMap();renderEdge();updateAddAction();
  if(focusSelector){
    const next=$('#visits').querySelector(focusSelector);
    (next?.disabled?next.closest('.visit'):next)?.focus({preventScroll:true});
  }
 }
+function stopActions(v){
+ if(v.restoreStatus==='loading')return '<p class="visit-details" role="status">Restoring place…</p>';
+ if(v.restoreStatus==='retry')return '<button class="visit-details" type="button" data-restore="'+v.id+'">Retry place lookup</button>';
+ if(v.restoreStatus==='relink')return '<button class="visit-details" type="button" data-relink="'+v.id+'">'+
+   (relinkStop===v.id?'Cancel relinking':'Find a replacement place')+'</button>';
+ return '<button class="visit-details" type="button" data-details="'+v.id+'">'+
+  (v.place.source?.startsWith('mapbox')&&!restorePlaceId(v.reference||referenceForPlace(v.place))?'Link a Google place to save its location':ui.placeDetails)+'</button>';
+}
 function selectVisit(id,fromMap=false){
  placeRevision++;placeController?.abort();
  selected=id;edge=null;const v=visits.find(v=>v.id===id);if(!v)return;
- selectedPlace=v.place;render();renderDetails();
+ if(relinkStop!==id)relinkStop=null;
+ if(fromMap){
+  if(mapProvider==='mapbox'&&v.place.googlePlaceId)openGoogleDetails(v.place,{moveMap:false});
+  else{selectedPlace=v.place;renderDetails();}
+ }
+ else if(googleDetailsController&&selectedPlace!==v.place)closePlacePane();
+ render();
  if(fromMap)document.querySelector('[data-visit="'+id+'"]')?.scrollIntoView({block:'nearest',behavior:'smooth'});
  else focusPlace(v.place);
 }
 async function selectPlace(p){
+ if(!p)return;
  const token=++placeRevision;placeController?.abort();placeController=new AbortController();
- if(!live){selectedPlace=p;renderDetails();return;}
- const existing=findDestination(visits,p);if(existing){revealExisting(existing);return;}
- selectedPlace=null;renderDetails();placesProvider.retain([...livePlaces,...visits.map(v=>v.place),p]);
+ const box=mapProvider==='mapbox',signal=placeController.signal;
+ const existing=findDestination(visits,p);
+ if(existing){if(box)selectVisit(existing.id,true);else revealExisting(existing);return;}
+ showPlaceStatus(box?'Loading place details…':'Loading Google place details…');
+ let detail;
  try{
-   const detail=await placesProvider.inspect(p,{signal:placeController.signal});
-   if(token!==placeRevision){monitor.record({api:'place-detail',reason:'place-selection',id:p.id,status:'stale-discarded'});return;}
-   selectedPlace=detail;renderDetails();retainPlaces();
- }catch(e){if(e.name!=='AbortError'&&token===placeRevision)toast('장소 정보 또는 시간대를 확인하지 못해 추가할 수 없습니다. 다시 선택하세요.');}
+  detail=box?(p.suggestion?await mapboxSearch.retrieve(p,signal):p):await placesProvider.describe(p,{signal});
+ }catch(e){
+  if(!signal.aborted&&token===placeRevision)showPlaceStatus(box?e.message:'Could not load the place details.',()=>selectPlace(p));
+  return;
+ }
+ if(token!==placeRevision)return;
+ await checkPlaceZone(detail,token,signal);
 }
+async function checkPlaceZone(detail,token,signal){
+ if(signal.aborted||token!==placeRevision)return;
+ showPlaceStatus('Checking place time zone…');
+ try{
+  const confirmed=await placesProvider.timeZone(detail,{signal});
+  if(signal.aborted||token!==placeRevision)return;
+  selectedPlace={...detail,zone:confirmed};
+  if(mapProvider==='mapbox')focusPlace(selectedPlace);
+  renderMap();renderDetails();retainPlaces();
+ }catch{
+  if(!signal.aborted&&token===placeRevision)showPlaceStatus('Couldn’t verify this place’s time zone. Try again.',()=>checkPlaceZone(detail,token,signal));
+ }
+}
+function showPlacePane(mode){
+ $('#place-panel').hidden=!mode;
+ $('#result-panel').hidden=mode!=='results';
+ $('#details').hidden=mode!=='details';
+ $('#back-results').hidden=mode!=='details'||!$('#results').querySelector('[data-result]');
+ document.body.classList.toggle('show-places',!!mode);
+}
+function showPlaceStatus(message,retry){
+ googleDetailsController?.abort();selectedPlace=null;renderMap();
+ showPlacePane('details');$('#details').innerHTML=`<p role="status">${esc(message)}</p>`;
+ if(retry){const button=document.createElement('button');button.textContent=ui.retry;button.onclick=retry;$('#details').append(button);}
+}
+function closePlacePane(back=false){
+ placeRevision++;placeController?.abort();googleDetailsController?.abort();googleDetailsController=null;
+ if(!back){searchRevision++;searchController?.abort();delayedMapboxSearch.cancel();delayedSearch.cancel();}
+ selectedPlace=null;$('#details').replaceChildren();showPlacePane(back?'results':null);renderMap();retainPlaces();
+}
+$('#close-details').onclick=()=>closePlacePane();
+$('#back-results').onclick=()=>{closePlacePane(true);if(mapProvider==='mapbox')searchMapbox();};
+
 function renderDetails(){
- const panel=$('#details');panel.hidden=!selectedPlace;if(!selectedPlace)return;
- const p=selectedPlace;const day=$('#date').value?new Date($('#date').value+'T00:00:00Z').getUTCDay():0;
- const clock=m=>(m>=1440?'다음 날 ':'')+String(Math.floor((m%1440)/60)).padStart(2,'0')+':'+String(m%60).padStart(2,'0');
- const hrs=p.hours?(p.hours[day]||[]).map(([a,b])=>clock(a)+' – '+clock(b)).join('<br>')||'휴무':'운영시간 정보 없음';
- panel.innerHTML='<button class="close" id="close-details" aria-label="장소 정보 닫기">×</button>'+(p.photo?'<img class="place-photo" src="'+esc(p.photo)+'" alt="'+esc(p.name)+' 사진">':'<div class="place-art"><span>'+esc(p.symbol||'⌖')+'</span><small>사진 없음 · 장소 기호</small></div>')+'<div class="details-body"><span class="eyebrow">'+esc(p.category)+'</span><h2>'+esc(p.name)+'</h2><p class="address">⌖ '+esc(p.address)+'</p><p>'+esc(p.description||'Google Places에서 제공한 장소입니다.')+'</p>'+(p.attributions?.length?'<p>'+p.attributions.map(a=>'<a rel="noopener noreferrer" target="_blank" href="'+esc(a.providerURI||'https://maps.google.com')+'">'+esc(a.provider||'Google Maps')+'</a>').join(', ')+'</p>':'')+(p.authors?'<p>'+p.authors.map(a=>'<a rel="noopener noreferrer" target="_blank" href="'+esc(a.uri||'https://maps.google.com')+'">'+esc(a.displayName)+'</a>').join(', ')+'</p>':'')+'<div class="hours"><strong>선택 요일의 운영시간</strong><br>'+hrs+'<p>'+esc(p.hoursLabel)+'<br>공휴일·특정 날짜의 영업은 방문 전 확인하세요.</p></div><button class="primary" id="add">＋ 일정에 추가</button></div>';
- $('#close-details').onclick=()=>{placeRevision++;placeController?.abort();selectedPlace=null;renderDetails();retainPlaces();};$('#add').onclick=()=>add(p);updateAddAction();
+ googleDetailsController?.abort();googleDetailsController=null;
+ const panel=$('#details');
+ if(!selectedPlace){panel.replaceChildren();showPlacePane(null);return;}
+ showPlacePane('details');
+ if(mapProvider!=='mapbox'&&selectedPlace.source?.startsWith('mapbox')){panel.innerHTML='<p>View this place in Mapbox.</p>';return;}
+ if(mapProvider==='mapbox'&&!validMapboxPlace(selectedPlace)){
+  panel.innerHTML='<div class="details-body"><h2>Google place</h2><p>Place information from Google Maps.</p></div>';return;
+ }
+ const p=selectedPlace,day=$('#date').value?new Date($('#date').value+'T00:00:00Z').getUTCDay():null;
+ const clock=m=>(m>=1440?ui.nextDay+' ':'')+String(Math.floor((m%1440)/60)).padStart(2,'0')+':'+String(m%60).padStart(2,'0');
+ const dateHours=p.dateHours?.[$('#date').value];
+ const periods=dateHours??p.hours?.[day];
+ const hrs=periods?.map(([a,b])=>a===0&&b===1440?'Open 24 hours':clock(a)+' – '+clock(b)).join('<br>')||'Closed';
+ const hours=periods?`<div class="hours"><strong>${esc($('#date').value)} · ${esc(p.zone||zone())}</strong><br>${hrs}<p>${dateHours?'Hours for this date':'Regular hours · holiday and special hours are unconfirmed'}</p></div>`:'';
+ panel.innerHTML=(p.photo?'<img class="place-photo" src="'+esc(p.photo)+'" alt="'+esc(p.name)+' photo">':'')+'<div class="details-body"><span class="eyebrow">'+esc(p.category)+'</span><h2>'+esc(p.name)+'</h2>'+(p.address?'<p class="address">⌖ '+esc(p.address)+'</p>':'')+(p.attributions?.length?'<p>'+p.attributions.map(a=>'<a rel="noopener noreferrer" target="_blank" href="'+esc(a.providerURI||'https://maps.google.com')+'">'+esc(a.provider||'Google Maps')+'</a>').join(', ')+'</p>':'')+(p.authors?'<p>'+p.authors.map(a=>'<a rel="noopener noreferrer" target="_blank" href="'+esc(a.uri||'https://maps.google.com')+'">'+esc(a.displayName)+'</a>').join(', ')+'</p>':'')+hours+'</div>';
+ const actions=appendPlaceActions(panel,p);
+ if(mapProvider==='mapbox'){
+  const googleButton=document.createElement('button');googleButton.type='button';googleButton.className='place-link-action';
+  googleButton.textContent='View Google place details';googleButton.onclick=()=>openGoogleDetails(p);actions.append(googleButton);
+ }
+}
+function appendPlaceActions(container,place){
+ const actions=document.createElement('div');actions.className='place-detail-actions';
+ const button=document.createElement('button');button.type='button';button.className='primary';button.id='add';
+ button.onclick=()=>{if(findDestination(visits,place))closePlacePane();add(place);};
+ const note=document.createElement('p');note.className='place-zone-note';note.role='status';note.hidden=true;
+ actions.append(note,button);container.append(actions);updateAddAction();return actions;
+}
+async function openGoogleDetails(place,{rematch=false,moveMap=true}={}){
+ placeRevision++;placeController?.abort();googleDetailsController?.abort();selectedPlace=place;
+ showPlacePane('details');const panel=$('#details');panel.scrollTop=0;
+ if(moveMap&&mapProvider==='mapbox')focusPlace(place);
+ googleDetailsController=new AbortController();
+ const {signal}=googleDetailsController;
+ const host=document.createElement('section');host.className='google-details';
+ host.setAttribute('aria-label','Google Maps place details');panel.replaceChildren(host);renderMap();
+ const status=(message,retry)=>{
+  host.replaceChildren();const p=document.createElement('p');p.role='status';p.textContent=message;host.append(p);
+  if(retry){const button=document.createElement('button');button.type='button';button.textContent=ui.retry;button.onclick=retry;host.append(button);}
+ };
+ const retryMatch=()=>openGoogleDetails(place,{rematch,moveMap:false});
+ let Place;
+ function showWidget(id){
+  status('Loading Google Maps place details…');
+  panel.scrollTop=0;
+  const retry=()=>showWidget(id);
+  const timeout=setTimeout(()=>{if(!signal.aborted)status('Google Places UI Kit timed out.',retry);},15000);
+  signal.addEventListener('abort',()=>clearTimeout(timeout),{once:true});
+  const widget=createGoogleWidget(id,{Place,onLoad:()=>{
+   clearTimeout(timeout);
+   if(signal.aborted||!widget.isConnected)return;
+   const visit=findDestination(visits,place);
+   const reference=visit&&(visit.reference||referenceForPlace(visit.place));
+   rememberGooglePlaceId(place,id);
+   if(visit){
+    visit.place.googlePlaceId=id;
+    if(restorePlaceId(reference)!==id){
+     visit.reference={...reference,googlePlaceId:id};
+     onboarding.save(saveSnapshot());
+    }
+   }
+   host.querySelector('[role=status]')?.remove();
+   const note=document.createElement('p');note.className='google-hours-note';
+   note.textContent='“Open now” refers to the current local time at the place. Check special hours for your travel date before visiting.';
+   host.append(note);
+   const actions=appendPlaceActions(host,place);
+   const change=document.createElement('button');change.type='button';change.className='place-link-action';change.textContent=ui.changePlace;
+   change.onclick=()=>openGoogleDetails(place,{rematch:true,moveMap:false});actions.append(change);
+  },onError:()=>{clearTimeout(timeout);if(!signal.aborted&&widget.isConnected)status('Could not load Google place details.',retry);}});
+  host.append(widget);
+ }
+ status('Finding the matching place in Google Maps…');
+ try{
+  const match=await findGoogleCandidates(place,config.browserKey,signal,{rematch});
+  if(signal.aborted)return;
+  ({Place}=await google.maps.importLibrary('places'));
+  if(signal.aborted)return;
+  if(match.id){showWidget(match.id);return;}
+  if(!match.candidates.length){status('No matching Google place was found near these coordinates.',retryMatch);return;}
+  status('Check the address and category, then select the matching Google place.');
+  let remaining=match.candidates.length;
+  const candidateTimeout=setTimeout(()=>{if(!signal.aborted&&host.querySelector('.google-candidate')&&!host.querySelector('.google-candidate button:enabled'))status('Google place candidates took too long to load.',retryMatch);},15000);
+  signal.addEventListener('abort',()=>clearTimeout(candidateTimeout),{once:true});
+  for(const candidate of match.candidates){
+   const entry=document.createElement('div');entry.className='google-candidate';
+   const confirm=document.createElement('button');confirm.textContent='Select this Google place';confirm.disabled=true;
+   const widget=createGoogleWidget(candidate.id,{Place,compact:true,onLoad:()=>{confirm.disabled=false;},onError:()=>{
+    if(signal.aborted||!entry.isConnected)return;
+    entry.remove();remaining--;
+    if(!remaining){clearTimeout(candidateTimeout);status('Google rejected the place preview request. Check that Places UI Kit is enabled and review the key restrictions.',retryMatch);}
+   }});
+   confirm.onclick=()=>{clearTimeout(candidateTimeout);showWidget(candidate.id);};entry.append(widget,confirm);host.append(entry);
+  }
+ }catch(error){if(!signal.aborted)status(error.message.startsWith('Google')?error.message:'Google place search failed. Check Places API (New), key restrictions, and the network.',retryMatch);}
+}
+function transitClock(instant){
+ if(!instant||!Number.isFinite(Date.parse(instant)))return '';
+ return new Intl.DateTimeFormat(locale,{timeZone:zone(),month:'numeric',day:'numeric',hour:'2-digit',minute:'2-digit',hourCycle:'h23'}).format(new Date(instant));
+}
+function transitMarkup(route,from,to){
+ const agencies=new Map();
+ let rides=0;
+ const steps=(route.steps||[]).map(step=>{
+  if(step.mode!=='TRANSIT'){
+   const minutes=Number.isFinite(step.seconds)?' · '+formatDuration(Math.ceil(step.seconds/60)):'';
+   const distance=Number.isFinite(step.distance)?' · '+step.distance+' m':'';
+   return '<li><strong>'+ui.modes.WALK+minutes+distance+'</strong>'+(step.instruction?'<p>'+esc(step.instruction)+'</p>':'')+'</li>';
+  }
+  for(const a of step.agencies||[])if(a.name)agencies.set(a.name,a.uri);
+  const label=[step.vehicle,step.line,step.lineName!==step.line?step.lineName:''].filter(Boolean).join(' · ');
+  const stop=(time,name)=>[transitClock(time),name].filter(Boolean).join(' ');
+  return '<li><strong>'+(rides++?'Transfer · ':'')+esc(label||ui.modes.TRANSIT)+'</strong>'+
+   (step.headsign?'<p>'+esc(step.headsign)+' bound</p>':'')+
+   '<p>Board '+esc(stop(step.departureTime,step.departureStop)||ui.unavailable)+'<br>Get off '+esc(stop(step.arrivalTime,step.arrivalStop)||ui.unavailable)+'</p></li>';
+ }).join('');
+ const credits=[...agencies].map(([name,uri])=>/^https?:\/\//i.test(uri||'')?'<a href="'+esc(uri)+'" target="_blank" rel="noopener noreferrer">'+esc(name)+'</a>':esc(name)).join(' · ');
+ const distance=Number.isFinite(route.distance)?' · '+(route.distance/1000).toFixed(2)+' km':'';
+ return '<p class="transit-total">'+ui.departure+' '+esc(scheduleTime(from?.departure))+' → '+ui.arrival+' '+esc(scheduleTime(to?.arrival))+'<br><strong>'+formatDuration(route.minutes)+'</strong>'+distance+(route.fare?' · '+esc(route.fare):'')+'</p>'+
+  '<small>Google Maps'+(credits?' · '+credits:'')+'</small><ol class="transit-steps">'+steps+'</ol>';
 }
 function renderEdge(){
  const panel=$('#edge-settings');panel.hidden=!edge||!segments[edge];if(panel.hidden)return;
- const i=visits.findIndex((v,i)=>i<visits.length-1&&segmentKey(v,visits[i+1])===edge),r=result.routes[edge];
- panel.innerHTML='<button class="close" id="close-edge" aria-label="이동 설정 닫기">×</button><h3>'+(i+1)+' → '+(i+2)+' 이동 설정</h3><div class="mode-buttons">'+Object.entries(modes).map(([key,label])=>'<button data-mode="'+key+'" class="'+(segments[edge].mode===key?'active':'')+'">'+label+'</button>').join('')+'</div><p>'+esc(loading?'계산 중…':r?.fallback?'대중교통 경로 없음이 확인되어 자동차로 전환했습니다.':r?.details||r?.message||'경로 확인 필요')+'</p><p>'+(live?'Google Routes · 지역별 지원 범위가 다릅니다.':'시연용 추정 시간 · 실제 길찾기가 아닙니다.')+'</p>';
+ const i=visits.findIndex((v,index)=>index<visits.length-1&&segmentKey(v,visits[index+1])===edge),r=result.routes[edge];
+ const mode=segments[edge].mode,box=mapProvider==='mapbox';
+ const controls=Object.entries(modes).map(([key,label])=>'<button data-mode="'+key+'" aria-pressed="'+(mode===key)+'" class="'+(mode===key?'active':'')+'">'+label+(box&&key==='TRANSIT'?' · Switch to Google Maps':'')+'</button>').join('');
+ const koreaCoverageGap=!loading&&!box&&zone()==='Asia/Seoul'&&r?.status==='no-route'&&['WALK','DRIVE'].includes(mode);
+ const message=koreaCoverageGap
+  ?'Google Maps has limited walking and driving coverage in South Korea. Select Public transit to check this leg.'
+  :r?.details||r?.message||'Waiting for route details';
+ const info=!loading&&r?.status==='ok'&&mode==='TRANSIT'&&!box
+  ?transitMarkup(r,result.rows[i],result.rows[i+1])
+  :'<p>'+esc(loading?ui.calculating:message)+'</p>'+(!loading&&!koreaCoverageGap&&r&&r.status!=='ok'?'<button id="retry-route" type="button">'+ui.retry+'</button>':'');
+ const previous=panel.querySelector('.edge-settings-content')?.scrollTop||0;
+ panel.innerHTML='<div class="edge-settings-content"><button class="close" id="close-edge" aria-label="Close travel mode">×</button><h3>'+(i+1)+' → '+(i+2)+' travel mode</h3><div class="mode-buttons">'+controls+'</div>'+info+'</div>';
+ panel.firstElementChild.scrollTop=previous;
  $('#close-edge').onclick=()=>{edge=null;renderEdge();renderMap();};
- panel.querySelectorAll('[data-mode]').forEach(b=>b.onclick=()=>{if(segments[edge].mode===b.dataset.mode)return;segments[edge]={mode:b.dataset.mode};refresh('mode');});
+ $('#retry-route')?.addEventListener('click',()=>{provider().pool?.clear();if(!box)liveProvider.pool.clear();refresh('retry');});
+ panel.querySelectorAll('[data-mode]').forEach(button=>button.onclick=()=>{
+  const next=button.dataset.mode;
+  if(mode===next)return;
+  if(box&&next==='TRANSIT'){
+   if(visits[i]?.place.source?.startsWith('mapbox')||visits[i+1]?.place.source?.startsWith('mapbox')){
+    toast(ui.mapboxGoogleLocation);
+    return;
+   }
+   toast('Opening Google Maps…');
+   switchGoogle({transitEdge:edge});return;
+  }
+  segments[edge]={mode:next};refresh('mode');
+ });
 }
-const project=p=>({x:(p.lng-126.963)*17000+50,y:(37.592-p.lat)*15000+50});
-const mapBase='<defs><pattern id="blocks" width="100" height="80" patternUnits="userSpaceOnUse" patternTransform="rotate(-12)"><rect width="100" height="80" fill="#C8D4CB"/><rect x="7" y="7" width="85" height="65" rx="7" fill="#B4C2B8" stroke="#789282" stroke-width="6"/></pattern></defs><rect x="-5000" y="-5000" width="10000" height="10000" fill="url(#blocks)"/><path d="M-100 155 Q170 175 220 55 Q310 -90 510 15 L570 -200 -100 -200Z" fill="#4D775F"/><path d="M180 800 Q170 570 370 610 Q500 625 590 800" fill="#4D775F"/><path d="M-100 421 Q230 390 450 425 T1100 430" fill="none" stroke="#B6C8C1" stroke-width="19"/><g fill="none" stroke="#164F3B" stroke-width="15"><path d="M-100 333 L1100 333"/><path d="M270 -100 L260 400 90 850"/><path d="M-100 555 L1100 520"/><path d="M700 -100 L750 900"/></g><g fill="#143B2C" font-size="16" letter-spacing="5"><text x="540" y="230">종로구</text><text x="555" y="565">중구</text><text x="295" y="690">남산</text><text x="560" y="410" font-size="11">청계천</text></g>';
 function decode(encoded){let index=0,lat=0,lng=0,points=[];while(index<encoded.length){const read=()=>{let b,shift=0,n=0;do{b=encoded.charCodeAt(index++)-63;n|=(b&31)<<shift;shift+=5;}while(b>=32);return n&1?~(n>>1):n>>1;};lat+=read();lng+=read();points.push({lat:lat/1e5,lng:lng/1e5});}return points;}
-function graphics(proj,isLive=false){
- const unit=isLive?1:Math.max(view[2]/$('#map').clientWidth,view[3]/$('#map').clientHeight);
- const locations=visits.map(v=>proj(v.place));
- const offsets=visits.map((v,i)=>{const same=visits.map((x,j)=>x.place.lat===v.place.lat&&x.place.lng===v.place.lng?j:-1).filter(j=>j>=0);const n=same.indexOf(i);return {x:locations[i].x+(same.length>1?(n-(same.length-1)/2)*40*unit:0),y:locations[i].y};});
+function graphics(proj){
+ const unit=1;
+ const locations=visits.map(v=>hasLocation(v.place)?proj(v.place):null);
+ const offsets=visits.map((v,i)=>{if(!locations[i])return null;const same=visits.map((x,j)=>x.place.lat===v.place.lat&&x.place.lng===v.place.lng?j:-1).filter(j=>j>=0);const n=same.indexOf(i);return {x:locations[i].x+(same.length>1?(n-(same.length-1)/2)*40*unit:0),y:locations[i].y};});
  let out='';const casings=[],lines=[],arrows=[],edgeLabels=[];
  visits.slice(0,-1).forEach((v,i)=>{
  const k=segmentKey(v,visits[i+1]),r=result.routes[k],a=offsets[i],b=offsets[i+1];
- let d,points;
- if(isLive){if(!r?.polyline)return;points=decode(r.polyline).map(proj);d=points.map((q,j)=>(j?'L':'M')+q.x+','+q.y).join(' ');}
- else {const dx=b.x-a.x,dy=b.y-a.y,len=Math.hypot(dx,dy)||1,start=Math.min(24*unit,len/3),end=Math.min(26*unit,len/3);points=[{x:a.x+dx/len*start,y:a.y+dy/len*start},{x:b.x-dx/len*end,y:b.y-dy/len*end}];d=points.map((q,j)=>(j?'L':'M')+q.x+','+q.y).join(' ');}
+ if(!a||!b||r?.status!=='ok'||r.source!=='live'||!r.polyline)return;
+ const points=decode(r.polyline).map(proj),d=points.map((q,j)=>(j?'L':'M')+q.x+','+q.y).join(' ');
  const active=edge===k?' active':'';
  casings.push('<path class="route-casing'+active+'" d="'+d+'"/>');
- lines.push('<path class="edge-hit" data-edge="'+k+'" d="'+d+'"/><path class="map-edge'+active+'" data-edge="'+k+'" d="'+inkRoute(points,k,unit)+'" tabindex="0" role="button" aria-label="'+(i+1)+'에서 '+(i+2)+' 이동 설정"><title>'+esc(modes[r?.mode||segments[k].mode])+' · '+(r?.status==='ok'?r.minutes+'분':'경로 확인 필요')+'</title></path><path class="route-overprint" d="'+inkRoute(points,k,unit,true)+'"/>');
+ lines.push('<path class="edge-hit" data-edge="'+k+'" d="'+d+'"/><path class="map-edge'+active+'" data-edge="'+k+'" d="'+inkRoute(points,k,unit)+'" tabindex="0" role="button" aria-label="Travel mode from stop '+(i+1)+' to stop '+(i+2)+'"><title>'+esc(modes[r?.mode||segments[k].mode])+' · '+(r?.status==='ok'?formatDuration(r.minutes):ui.routeUnconfirmed)+'</title></path><path class="route-overprint" d="'+inkRoute(points,k,unit,true)+'"/>');
+ lines.push('<path class="route-current" aria-hidden="true" d="'+d+'"/>');
  const arrowPath=routeArrows(points,unit,k);
  arrows.push('<g class="route-arrows"><path class="arrow-casing" d="'+arrowPath+'"/><path class="arrow-white" d="'+arrowPath+'"/></g>');
- if(edge===k)edgeLabels.push('<text x="'+((a.x+b.x)/2)+'" y="'+((a.y+b.y)/2-12)+'" class="node-time">'+esc(modes[r?.mode||segments[k].mode])+' '+(r?.status==='ok'?r.minutes+'분':'확인 필요')+'</text>');
+ if(edge===k)edgeLabels.push('<text x="'+((a.x+b.x)/2)+'" y="'+((a.y+b.y)/2-12)+'" class="node-time">'+esc(modes[r?.mode||segments[k].mode])+' '+(r?.status==='ok'?formatDuration(r.minutes):ui.unconfirmed)+'</text>');
  });
  out+=casings.join('')+lines.join('')+arrows.join('')+edgeLabels.join('');
- (isLive?livePlaces:places).filter(p=>!visits.some(v=>v.place.id===p.id)).forEach(p=>{const q=proj(p);out+='<g class="map-place" data-place="'+esc(p.id)+'" tabindex="0" role="button" aria-label="'+esc(p.name)+' 정보" transform="translate('+q.x+','+q.y+')"><circle r="7" fill="#fff" stroke="#789282" stroke-width="2"/><text class="node-title" x="13" y="4" style="font-size:11px;font-weight:400">'+esc(p.name)+'</text></g>';});
+ livePlaces.filter(p=>!visits.some(v=>v.place.id===p.id)).forEach(p=>{const q=proj(p);out+='<g class="map-place" data-place="'+esc(p.id)+'" tabindex="0" role="button" aria-label="'+esc(p.name)+' details" transform="translate('+q.x+','+q.y+')"><circle r="7" fill="#fff" stroke="#789282" stroke-width="2"/><text class="node-title" x="13" y="4" style="font-size:11px;font-weight:400">'+esc(p.name)+'</text></g>';});
  // Lay out the selected label first, then reserve its arrival line before other labels.
- const priority=visits.map((v,i)=>i).sort((a,b)=>(visits[b].id===selected?1:0)-(visits[a].id===selected?1:0));
- const occupied=offsets.map(q=>({x:q.x/unit-20,y:q.y/unit-20,w:40,h:40}));
+ const priority=visits.map((v,i)=>i).filter(i=>offsets[i]&&!visits[i].place.source?.startsWith('mapbox')).sort((a,b)=>(visits[b].id===selected?1:0)-(visits[a].id===selected?1:0));
+ const occupied=offsets.filter(Boolean).map(q=>({x:q.x/unit-20,y:q.y/unit-20,w:40,h:40}));
  const labels={};
  const overlaps=(a,b)=>a.x<b.x+b.w&&a.x+a.w>b.x&&a.y<b.y+b.h&&a.y+a.h>b.y;
  priority.forEach(i=>{
@@ -194,41 +452,56 @@ function graphics(proj,isLive=false){
    labels[i]=label;occupied.push(bounds(label));
    if(visits[i].id===selected)occupied.push({x:q.x/unit-65,y:q.y/unit+25,w:130,h:20});
  });
- priority.reverse().forEach(i=>{const v=visits[i],q=offsets[i],active=v.id===selected,label=labels[i];
- out+='<g class="map-node" data-node="'+v.id+'" tabindex="0" role="button" aria-label="'+(i+1)+'번 '+esc(v.place.name)+(i===0?' 출발점':'')+'" transform="translate('+q.x+','+q.y+') scale('+unit+')">';
+ priority.reverse().forEach(i=>{const v=visits[i],q=offsets[i],active=v.id===selected,label=labels[i];if(v.place.source?.startsWith('mapbox'))return;
+ out+='<g class="map-node" data-node="'+v.id+'" tabindex="0" role="button" aria-label="'+(i+1)+' · '+esc(v.place.name)+(i===0?' · Starting point':'')+'" transform="translate('+q.x+','+q.y+') scale('+unit+')">';
  if(q.x!==locations[i].x)out+='<line x1="0" y1="0" x2="'+((locations[i].x-q.x)/unit)+'" y2="0" stroke="#789282"/>';
- out+='<path class="node-outline" d="'+inkNode(v.id,active?21:17)+'" fill="#164F3B" stroke="'+(active?'#F4F1E8':'#DDE9E1')+'" stroke-width="'+(active?5:2)+'"/><circle r="'+(active?20:16)+'" fill="#164F3B" stroke="none"/><text class="node-number" text-anchor="middle" y="5" fill="white" font-size="13" font-weight="700">'+(i+1)+'</text>';
+ out+='<path class="node-outline" d="'+inkNode(v.id,active?21:17)+'" fill="'+mapPalette.marker+'" stroke="'+(active?'#F4F1E8':'#DDE9E1')+'" stroke-width="'+(active?5:2)+'"/><circle r="'+(active?20:16)+'" fill="'+mapPalette.marker+'" stroke="none"/><text class="node-number" text-anchor="middle" y="5" fill="white" font-size="13" font-weight="700">'+(i+1)+'</text>';
  out+='<text class="node-title" text-anchor="middle" x="'+label.x+'" y="'+label.y+'">'+esc(v.place.name)+'</text>';
- if(i===0)out+='<g class="node-start"><rect x="14" y="7" width="31" height="18" rx="5" fill="#DDE9E1" stroke="#164F3B"/><text x="29.5" y="20" text-anchor="middle" font-size="10" fill="#164F3B">출발</text></g>';
- if(active)out+='<text class="node-time" text-anchor="middle" y="39">'+esc(loading?'계산 중…':stamp(result.rows[i]?.arrival))+'</text>';
+ if(i===0)out+='<g class="node-start"><rect x="14" y="7" width="31" height="18" rx="5" fill="#DDE9E1" stroke="#164F3B"/><text x="29.5" y="20" text-anchor="middle" font-size="10" fill="#164F3B">Start</text></g>';
+ if(active)out+='<text class="node-time" text-anchor="middle" y="39">'+esc(loading?ui.calculating:stamp(result.rows[i]?.arrival))+'</text>';
  out+='</g>';
  });return out;
 }
 function bindMap(el){
- el.onclick=e=>{const n=e.target.closest('[data-node]'),p=e.target.closest('[data-place]'),s=e.target.closest('[data-edge]');if(n)selectVisit(n.dataset.node,true);else if(p)selectPlace((live?livePlaces:places).find(x=>x.id===p.dataset.place));else if(s){edge=s.dataset.edge;renderEdge();renderMap();}};
+ el.onclick=e=>{const n=e.target.closest('[data-node]'),p=e.target.closest('[data-place]'),s=e.target.closest('[data-edge]');if(n)selectVisit(n.dataset.node,true);else if(p)selectPlace(livePlaces.find(x=>x.id===p.dataset.place));else if(s){edge=s.dataset.edge;renderEdge();renderMap();}};
  el.onkeydown=e=>{if(e.key==='Enter'||e.key===' '){const target=e.target.closest('[role="button"]');if(target){e.preventDefault();target.dispatchEvent(new MouseEvent('click',{bubbles:true}));}}};
 }
 function renderMap(){
- if(live){overlay?.draw();return;}
- $('#map').innerHTML=mapBase+graphics(project);$('#map').setAttribute('viewBox',view.join(' '));
+ if(mapProvider==='mapbox'){mapboxRenderer?.render(visits,selected,result.routes);mapboxRenderer?.preview(selectedPlace&&!visits.some(v=>v.place.id===selectedPlace.id)?selectedPlace:null);return;}
+ overlay?.draw();
 }
 function focusPlace(p){
- if(live){gmap?.panTo({lat:p.lat,lng:p.lng});return;}
- const q=project(p);view[0]=q.x-view[2]*.60;view[1]=q.y-view[3]*.48;renderMap();
+ if(!hasLocation(p))return;
+ if(mapProvider==='mapbox')mapboxRenderer?.focus(p);
+ else gmap?.panTo({lat:p.lat,lng:p.lng});
 }
-bindMap($('#map'));
-new ResizeObserver(()=>renderMap()).observe($('.map-area'));
-let pan;
-$('#map').addEventListener('pointerdown',e=>{if(e.target.closest('[data-node],[data-edge],[data-place]'))return;pan={x:e.clientX,y:e.clientY,view:[...view]};$('#map').setPointerCapture(e.pointerId);});
-$('#map').addEventListener('pointermove',e=>{if(!pan)return;const scale=Math.max(view[2]/$('#map').clientWidth,view[3]/$('#map').clientHeight);view[0]=pan.view[0]-(e.clientX-pan.x)*scale;view[1]=pan.view[1]-(e.clientY-pan.y)*scale;$('#map').setAttribute('viewBox',view.join(' '));});
-$('#map').addEventListener('pointerup',()=>pan=null);$('#map').addEventListener('pointercancel',()=>pan=null);
-function zoom(factor){if(live){gmap.setZoom(gmap.getZoom()+(factor<1?1:-1));return;}const w=Math.max(220,Math.min(2600,view[2]*factor)),h=w*.8;view=[view[0]+(view[2]-w)/2,view[1]+(view[3]-h)/2,w,h];renderMap();}
-$('#map').addEventListener('wheel',e=>{e.preventDefault();zoom(e.deltaY>0?1.12:.88);},{passive:false});
+new ResizeObserver(()=>{if(mapProvider==='mapbox')mapboxRenderer?.resize();renderMap();}).observe($('.map-area'));
+function zoom(factor){
+ const delta=factor<1?1:-1;
+ if(mapProvider==='mapbox')mapboxRenderer?.zoom(delta);
+ else if(gmap)gmap.setZoom(gmap.getZoom()+delta);
+}
 $('#zoom-in').onclick=()=>zoom(.8);$('#zoom-out').onclick=()=>zoom(1.25);
-$('#fit').onclick=()=>{if(live){const b=new google.maps.LatLngBounds();(visits.length?visits.map(v=>v.place):livePlaces).forEach(p=>b.extend({lat:p.lat,lng:p.lng}));if(!b.isEmpty())gmap.fitBounds(b,80);}else{view=[0,0,1000,800];renderMap();}};
+$('#fit').onclick=()=>{if(mapProvider==='mapbox'){
+ const points=visits.map(v=>v.place).filter(validMapboxPlace);
+ if(points.length){
+  const narrow=matchMedia('(max-width: 800px)').matches;
+  const top=$('header').getBoundingClientRect().bottom+18,bottom=narrow?Math.round(innerHeight*.36)+38:48;
+  const leftPanel=$('#place-panel');
+  const padding={top:Math.min(top,innerHeight*.36),bottom,left:!narrow&&!leftPanel.hidden?leftPanel.offsetWidth+48:32,right:narrow?32:$('.itinerary').offsetWidth+48};
+  mapboxRenderer?.fit([[Math.min(...points.map(p=>p.lng))-.002,Math.min(...points.map(p=>p.lat))-.002],[Math.max(...points.map(p=>p.lng))+.002,Math.max(...points.map(p=>p.lat))+.002]],padding);
+ }
+ return;
+}
+ if(gmap){const b=new google.maps.LatLngBounds();(visits.length?visits.map(v=>v.place).filter(p=>hasLocation(p)&&!p.source?.startsWith('mapbox')):livePlaces).forEach(p=>b.extend({lat:p.lat,lng:p.lng}));if(!b.isEmpty())gmap.fitBounds(b,80);}
+};
 $('#visits').onclick=e=>{
- const remove=e.target.closest('[data-remove]'),move=e.target.closest('[data-move]'),s=e.target.closest('[data-edge]');
- if(remove){visits=visits.filter(v=>v.id!==remove.dataset.remove);if(selected===remove.dataset.remove)selected=null;refresh();}
+ const remove=e.target.closest('[data-remove]'),move=e.target.closest('[data-move]'),s=e.target.closest('[data-edge]'),detail=e.target.closest('[data-details]');
+ const restore=e.target.closest('[data-restore]'),relink=e.target.closest('[data-relink]');
+ if(restore){retrySavedStop(restore.dataset.restore);}
+ else if(relink){relinkSavedStop(relink.dataset.relink);}
+ else if(detail){const visit=visits.find(v=>v.id===detail.dataset.details);if(visit)openGoogleDetails(visit.place);}
+ else if(remove){visits=visits.filter(v=>v.id!==remove.dataset.remove);if(selected===remove.dataset.remove)selected=relinkStop=null;refresh();}
  else if(move){reorder(move.dataset.move,visits.findIndex(v=>v.id===move.dataset.move)+Number(move.dataset.delta));}
  else if(s){edge=s.dataset.edge;renderMap();renderEdge();}
  else if(!e.target.closest('input,label,button')){const card=e.target.closest('[data-visit]');if(card)selectVisit(card.dataset.visit);}
@@ -245,56 +518,280 @@ $('#visits').ondragover=e=>{const c=e.target.closest('[data-visit]');if(c){e.pre
 $('#visits').ondragleave=e=>e.target.closest('[data-visit]')?.classList.remove('drag-over');
 $('#visits').ondrop=e=>{e.preventDefault();const card=e.target.closest('[data-visit]');if(card)reorder(dragId||e.dataTransfer.getData('text/plain'),visits.findIndex(v=>v.id===card.dataset.visit));dragId=null;};
 $('#visits').ondragend=()=>{dragId=null;document.querySelectorAll('.dragging,.drag-over').forEach(e=>e.classList.remove('dragging','drag-over'));};
-$('#sample').onclick=sample;$('#scenario').onchange=refresh;
-$('#date').onchange=()=>{refresh('date');renderDetails();};$('#time').onchange=()=>refresh('time');
+$('#date').onchange=()=>{schedule.date=$('#date').value;refresh('date');if(selectedPlace&&!googleDetailsController)renderDetails();};
+$('#time').onchange=()=>{schedule.time=$('#time').value;refresh('time');};
 $('#date').oninput=$('#date').onchange;$('#time').oninput=$('#time').onchange;
-function showResults(list){$('#results').innerHTML=list.length?list.map(p=>'<button type="button" class="result" data-result="'+esc(p.id)+'">'+esc(p.name)+'<small>'+esc(p.address)+'</small></button>').join(''):'<div class="result">검색 결과가 없습니다.</div>';$('#results').querySelectorAll('[data-result]').forEach(b=>b.onclick=()=>{const place=list.find(p=>p.id===b.dataset.result);const existing=findDestination(visits,place);if(existing)revealExisting(existing);else selectPlace(place);$('#results').innerHTML='';});}
+function showResults(list){
+ showPlacePane('results');
+ $('#results').innerHTML=list.length?list.map(p=>'<button type="button" class="result" data-result="'+esc(p.id)+'">'+esc(p.name)+'<small>'+esc(p.address)+'</small></button>').join(''):'<p>'+ui.noResults+'</p>';
+ $('#results').querySelectorAll('[data-result]').forEach(button=>button.onclick=()=>selectPlace(list.find(p=>p.id===button.dataset.result)));
+}
+function showSearchStatus(message){
+ placeRevision++;placeController?.abort();googleDetailsController?.abort();googleDetailsController=null;
+ selectedPlace=null;$('#details').replaceChildren();renderMap();
+ $('#results').textContent=message;showPlacePane('results');
+}
 // Keep the existing explicit-submit search UX: typing never spends Google quota.
 // Debounce repeated submits, invalidate older results as soon as input changes.
 $('#search').oninput=()=>{
- if(!live){const q=$('#search').value.trim();showResults(places.filter(p=>(p.name+p.address+p.category).includes(q)));return;}
- delayedSearch.cancel();searchRevision++;searchController?.abort();$('#results').innerHTML='';
+ if(mapProvider==='mapbox'){searchRevision++;searchController?.abort();delayedMapboxSearch.cancel();if($('#search').value.trim().length>=2){showSearchStatus('Preparing search…');delayedMapboxSearch();}else if(!$('#place-panel').hidden)closePlacePane();return;}
+ delayedSearch.cancel();searchRevision++;searchController?.abort();
+ if(!$('#details').hidden)closePlacePane();
+ $('#results').innerHTML='';
 };
-$('#search').onfocus=()=>{if(!live)$('#search').oninput();};
-document.addEventListener('click',e=>{if(!e.target.closest('#search-form'))$('#results').innerHTML='';});
 $('#search-form').onsubmit=e=>{
- e.preventDefault();if(!live){$('#search').oninput();return;}
- if([...$('#search').value.trim()].length<requestConfig.minSearchLength){delayedSearch.cancel();$('#results').textContent='검색어를 2자 이상 입력하세요.';return;}
+ e.preventDefault();if(mapProvider==='mapbox'){delayedMapboxSearch.cancel();searchMapbox();return;}
+ if([...$('#search').value.trim()].length<requestConfig.minSearchLength){delayedSearch.cancel();showSearchStatus(ui.minQuery);return;}
  delayedSearch();
 };
 async function searchPlaces(reason){
  const rev=++searchRevision;searchController?.abort();searchController=new AbortController();
- $('#results').textContent='Google Places 검색 중…';
+ showSearchStatus('Searching Google Places…');
  try{
-   const list=await placesProvider.search($('#search').value,{signal:searchController.signal,reason});
+   const list=await placesProvider.search($('#search').value,{signal:searchController.signal,reason,
+    locationBias:tripDestination.center});
    if(rev!==searchRevision){monitor.record({api:'places-search',reason,id:'current-query',status:'stale-discarded'});return;}
    livePlaces=list;retainPlaces();showResults(livePlaces);renderMap();
- }catch(e){if(e.name!=='AbortError'&&rev===searchRevision)$('#results').textContent='장소 검색 실패 · API 설정과 지역별 지원을 확인하세요.';}
+ }catch(e){if(e.name!=='AbortError'&&rev===searchRevision)$('#results').textContent='Place search failed. Check API settings and regional availability.';}
 }
-$('#service').onclick=async()=>{
- if(live){location.reload();return;}
- if(!config.browserKey){toast('Google API 키가 없습니다. .env에 브라우저 키와 서버 키를 설정한 뒤 재시작하세요. 현재 데모의 모든 편집 기능은 사용 가능합니다.');return;}
- try{
- $('#service').disabled=true;
+async function searchMapbox(){
+ const q=$('#search').value.trim();if(q.length<2){showSearchStatus(ui.minQuery);return;}
+   const rev=++searchRevision;searchController?.abort();searchController=new AbortController();showSearchStatus('Searching Mapbox…');
+ try{const map=mapboxRenderer?.map,c=map?.getZoom()>=5?map.getCenter():tripDestination.center;const list=await mapboxSearch.suggest(q,[c.lng,c.lat],searchController.signal);if(rev!==searchRevision||mapProvider!=='mapbox')return;showResults(list);}
+ catch(e){if(e.name!=='AbortError'&&rev===searchRevision)$('#results').textContent=e.message;}
+}
+async function connectGoogle(token,journeyCenter){
+ if(!config.browserKey)throw Error(ui.googleKeyMissing);
  await loadGoogleMaps(config.browserKey,{monitor});
- window.gm_authFailure=()=>toast('Google 지도 인증 실패 · 데모로 돌아가려면 새로고침하세요.');
- live=true;visits=[];segments={};selected=null;selectedPlace=null;$('#details').hidden=true;
- $('#map').style.display='none';$('#google-map').style.display='block';
- gmap=new google.maps.Map($('#google-map'),mapOptions(config.mapId));
- $('.map-area').classList.add('live-map');
+ if(token!==mapSwitch)return;
+ $('#google-map').style.display='block';
+ const map=new google.maps.Map($('#google-map'),{...mapOptions(config.mapId),...(journeyCenter?{center:journeyCenter,zoom:12}:{})});
+ await new Promise((resolve,reject)=>{
+  const timer=setTimeout(()=>finish(Error('Could not load Google Maps tiles.')),15000);
+  const listener=map.addListener('tilesloaded',()=>finish());
+  function finish(error){
+   clearTimeout(timer);listener?.remove?.();
+   if(error)reject(error);else resolve();
+  }
+  window.gm_authFailure=()=>finish(Error(ui.googleAuthSettings));
+ });
+ if(token!==mapSwitch)return;
+ gmap=map;
  class ItineraryOverlay extends google.maps.OverlayView{
- onAdd(){this.el=document.createElementNS('http://www.w3.org/2000/svg','svg');Object.assign(this.el.style,{position:'absolute',left:'0',top:'0',width:'1px',height:'1px',overflow:'visible',pointerEvents:'none'});this.getPanes().overlayMouseTarget.appendChild(this.el);bindMap(this.el);}
- draw(){if(!this.el)return;const projection=this.getProjection();if(!projection)return;this.el.innerHTML=graphics(p=>projection.fromLatLngToDivPixel(new google.maps.LatLng(p.lat,p.lng)),true);}
- onRemove(){this.el?.remove();}
+  onAdd(){this.el=document.createElementNS('http://www.w3.org/2000/svg','svg');Object.assign(this.el.style,{position:'absolute',left:'0',top:'0',width:'1px',height:'1px',overflow:'visible',pointerEvents:'none'});this.getPanes().overlayMouseTarget.appendChild(this.el);bindMap(this.el);}
+  draw(){if(!this.el||mapProvider!=='google')return;const projection=this.getProjection();if(projection)this.el.innerHTML=graphics(p=>projection.fromLatLngToDivPixel(new google.maps.LatLng(p.lat,p.lng)));}
+  onRemove(){this.el?.remove();}
  }
- overlay=new ItineraryOverlay();overlay.setMap(gmap);
- gmap.addListener('click',e=>{if(!e.placeId)return;e.stop();const existing=visits.find(v=>v.place.id===e.placeId);if(existing)revealExisting(existing);else selectPlace({id:e.placeId});});
- $('#source-badge').textContent='GOOGLE / LIVE';$('#service').textContent='데모로 돌아가기';$('#map-disclaimer').textContent='Google 지도 · 경로는 응답이 있는 경우만 표시';
- $('#map-caption').textContent='세계 지도를 탐색하세요. 장소·경로 지원은 지역마다 다릅니다.';
- $('#sample').disabled=true;$('#scenario').disabled=true;$('#search').value='';$('#results').innerHTML='';
- refresh();toast(config.serverReady?'Google 지도 모드 · 기존 샘플 대신 검색한 장소로 새 일정을 만드세요.':'서버 키 미설정 · 시간대 확인과 경로 요청을 사용할 수 없습니다.');
- }catch{toast('Google 지도를 불러오지 못했습니다. 키·결제·네트워크를 확인하세요.');}
- finally{$('#service').disabled=false;}
-};
-fetch('/api/config').then(r=>r.json()).then(c=>{config=c;monitor.setEnabled(c.requestMonitor===true);if(c.requestMonitor)window.travelLinkRequests=monitor;}).catch(()=>{});
-sample();
+ overlay=new ItineraryOverlay();overlay.setMap(map);
+ window.gm_authFailure=()=>{
+  if(gmap!==map||mapProvider!=='google')return;
+  google.maps.event.clearInstanceListeners(map);
+  overlay.setMap(null);overlay=null;gmap=null;
+  $('#google-map').replaceChildren();
+  showMapError(ui.googleAuth,()=>switchGoogle());
+ };
+ map.addListener('click',e=>{if(mapProvider!=='google'||!e.placeId)return;e.stop();const existing=visits.find(v=>v.place.source==='live'&&v.place.id===e.placeId);if(existing)revealExisting(existing);else selectPlace({id:e.placeId});});
+}
+function rememberProvider(provider){try{localStorage.setItem('travel-link.map-provider',provider);}catch{}}
+function currentBounds(){
+ if(mapProvider==='mapbox')return mapboxRenderer?.bounds();
+ const b=gmap?.getBounds?.();
+ if(b){const sw=b.getSouthWest(),ne=b.getNorthEast();return [[sw.lng(),sw.lat()],[ne.lng(),ne.lat()]];}
+ return null;
+}
+function updateProviderUI(){
+ const box=mapProvider==='mapbox';$('.map-area').dataset.provider=mapProvider;
+ $('#service').textContent=box?'Mapbox ▾':'Google Maps ▾';
+ $('#source-badge').textContent=box?'MAPBOX':'GOOGLE / LIVE';
+ $('#search').title=box?'Mapbox Search Box · United States, Canada, and Europe':'Search with Google Places';
+ $('#map-disclaimer').textContent=box?'Mapbox · OpenStreetMap contributors':'Google Maps · Google Routes';
+ document.querySelectorAll('[data-map-provider]').forEach(b=>b.setAttribute('aria-checked',String(b.dataset.mapProvider===mapProvider)));
+}
+function closeProviderMenu(){$('#map-provider-menu').hidden=true;$('#service').setAttribute('aria-expanded','false');}
+function cancelSearchForSwitch(){closePlacePane();mapboxSearch.reset();$('#results').replaceChildren();clearTimeout(toast.timer);$('#notice').style.display='none';}
+function globePadding(){
+ if(document.body.classList.contains('arrival-screen'))return {top:Math.round(innerHeight*.95),bottom:0,left:0,right:0};
+ const narrow=matchMedia('(max-width: 800px)').matches;
+ const header=$('header').getBoundingClientRect(),panel=$('.itinerary').getBoundingClientRect();
+ return {top:Math.min(header.bottom+16,innerHeight*.42),bottom:narrow?Math.min(innerHeight-panel.top+8,innerHeight*.45):38,
+  left:16,right:narrow?16:innerWidth-panel.left+14};
+}
+function showMapError(message,retry,other=mapProvider==='mapbox'?switchGoogle:switchMapbox){
+ clearTimeout(toast.timer);$('#notice').style.display='none';
+ $('#mapbox-error-text').textContent=message;
+ $('#mapbox-retry').onclick=()=>{ $('#mapbox-error').hidden=true;retry(); };
+ $('#mapbox-return').onclick=()=>{ $('#mapbox-error').hidden=true;other(); };
+ $('#mapbox-error').hidden=false;
+}
+function commitProvider(provider){
+ mapProvider=provider;rememberProvider(provider);
+ $('#mapbox-error').hidden=true;
+ cancelSearchForSwitch();updateProviderUI();refresh('provider');
+}
+async function switchMapbox(options={}){
+ closeProviderMenu();
+ if(!options.arrival&&Object.values(segments).some(segment=>segment.mode==='TRANSIT')){
+  toast(ui.transitGoogleOnly);
+  return;
+ }
+ if(pendingProvider==='mapbox'||mapProvider==='mapbox'&&mapboxRenderer?.ready)return;
+ pendingProvider='mapbox';
+ const token=++mapSwitch,bounds=options.initial?null:currentBounds();
+ $('#mapbox-error').hidden=true;
+ try{
+  await configReady;if(token!==mapSwitch)return;
+  if(!/^pk\.[A-Za-z0-9._-]+$/.test(config.mapboxToken||''))throw Error(ui.mapboxTokenMissing);
+  await loadMapbox();if(token!==mapSwitch)return;
+  mapboxRenderer?.destroy();
+  const renderer=new MapboxRenderer($('#mapbox-map'),{
+   onSelect:id=>selectVisit(id,true),onPlace:selectPlace,onEdge:key=>{edge=key;renderEdge();},
+   onError:message=>showMapError(message,()=>{renderer.destroy();switchMapbox(options);},switchGoogle)
+  });
+  mapboxRenderer=renderer;
+  await renderer.activate(config.mapboxToken,bounds,bounds?null:globePadding(),document.body.classList.contains('arrival-screen'));
+  if(token!==mapSwitch){renderer.destroy();return;}
+  $('#google-map').style.display='none';
+  commitProvider('mapbox');
+ }catch(error){
+  if(token!==mapSwitch)return;
+  mapboxRenderer?.destroy();showMapError(error.message,()=>switchMapbox(options),switchGoogle);
+ }finally{
+  if(token===mapSwitch)pendingProvider=null;
+ }
+}
+async function switchGoogle({transitEdge,journeyCenter}={}){
+ closeProviderMenu();
+ if(pendingProvider==='google'||mapProvider==='google'&&gmap&&!transitEdge&&!journeyCenter)return;
+ pendingProvider='google';
+ const token=++mapSwitch;
+ const bounds=currentBounds();
+ $('#mapbox-error').hidden=true;
+ try{
+  await configReady;if(token!==mapSwitch)return;
+  if(!gmap)await connectGoogle(token,journeyCenter);
+  else if(journeyCenter){
+   $('#google-map').style.display='block';
+   const current=gmap.getCenter?.();
+   if(current?.lat()!==journeyCenter.lat||current?.lng()!==journeyCenter.lng||gmap.getZoom()!==12){
+    await new Promise(resolve=>{
+     const listener=gmap.addListener('tilesloaded',finish),timeout=setTimeout(finish,2500);
+     function finish(){clearTimeout(timeout);listener?.remove();resolve();}
+     gmap.setOptions({center:journeyCenter,zoom:12});
+    });
+   }
+  }
+  if(token!==mapSwitch)return;
+  $('#google-map').style.display='block';
+  mapboxRenderer?.destroy();mapboxRenderer=null;
+  const localBounds=bounds&&bounds[1][0]-bounds[0][0]>0&&bounds[1][0]-bounds[0][0]<40;
+  if(localBounds&&!journeyCenter){
+   const [[west,south],[east,north]]=bounds;
+   gmap.fitBounds({west,south,east,north},0);
+  }
+  if(transitEdge&&segments[transitEdge]){segments[transitEdge]={mode:'TRANSIT'};edge=transitEdge;}
+  commitProvider('google');
+  if(transitEdge)onboarding.save(saveSnapshot());
+ }catch(error){
+  if(token!==mapSwitch)return;
+  if(!gmap){$('#google-map').style.display='none';$('#google-map').replaceChildren();}
+  showMapError(error.message,()=>switchGoogle({transitEdge,journeyCenter}),switchMapbox);
+ }finally{
+  if(token===mapSwitch)pendingProvider=null;
+ }
+}
+$('#service').setAttribute('aria-haspopup','menu');$('#service').setAttribute('aria-expanded','false');
+$('#service').onclick=()=>{const menu=$('#map-provider-menu');menu.hidden=!menu.hidden;$('#service').setAttribute('aria-expanded',String(!menu.hidden));if(!menu.hidden)menu.querySelector('[aria-checked="true"]').focus();};
+$('#choose-google').onclick=()=>switchGoogle();$('#choose-mapbox').onclick=()=>switchMapbox();
+document.addEventListener('click',e=>{if(!e.target.closest('.map-provider-picker'))closeProviderMenu();});
+$('.map-provider-picker').onkeydown=e=>{if(e.key==='Escape'){closeProviderMenu();$('#service').focus();}if(['ArrowDown','ArrowUp'].includes(e.key)){e.preventDefault();const buttons=[...$('#map-provider-menu').querySelectorAll('button')],index=buttons.indexOf(document.activeElement);$('#map-provider-menu').hidden=false;$('#service').setAttribute('aria-expanded','true');buttons[(index+(e.key==='ArrowDown'?1:-1)+buttons.length)%buttons.length].focus();}};
+window.addEventListener('pagehide',()=>mapboxRenderer?.destroy());
+const configReady=fetch('/api/config').then(r=>r.json()).then(c=>{config=c;monitor.setEnabled(c.requestMonitor===true);if(c.requestMonitor)window.travelLinkRequests=monitor;}).catch(()=>{});
+decorateWoodPanels();
+const narrowItinerary=matchMedia('(max-width: 800px)');
+function sizeDayOverview(){ $('#day-overview').open=!narrowItinerary.matches; }
+sizeDayOverview();narrowItinerary.addEventListener('change',sizeDayOverview);
+const pickers=setupSchedulePickers({date:$('#date'),time:$('#time'),today:()=>dateInZone(zone())});
+async function prepareGoogle(){
+ await configReady;
+ if(!config.browserKey)throw Error(ui.googleKeyMissing);
+ await loadGoogleMaps(config.browserKey,{monitor});
+}
+async function restoreStop(stop,savedZone,signal){
+ const reference=stopReference(stop),id=restorePlaceId(reference);
+ const visit={id:stop.id,stay:stop.stay,wait:stop.wait,reference};
+ let restoreStatus='relink';
+ if(id){
+  try{
+   await prepareGoogle();
+   signal?.throwIfAborted();
+   const place=await placesProvider.describe({id},{signal,reason:'resume-trip'});
+   if(!hasLocation(place)||!place.name)throw Error('Place details unavailable');
+   return {...visit,place:{...place,zone:savedZone},restoreStatus:null};
+  }catch(error){
+   if(signal?.aborted||error.name==='AbortError')throw error;
+   restoreStatus=['NOT_FOUND','INVALID_ARGUMENT'].includes(error.code)?'relink':'retry';
+  }
+ }
+ return {...visit,restoreStatus,place:{id:stop.id,source:'unavailable',
+  category:'Needs attention',name:restoreStatus==='retry'?'Place lookup failed':'Place needs relinking'}};
+}
+async function retrySavedStop(id){
+ const visit=visits.find(v=>v.id===id&&v.restoreStatus==='retry');
+ if(!visit)return;
+ visit.restoreStatus='loading';render();
+ const restored=await restoreStop({...visit,...visit.reference},zone());
+ if(!visits.includes(visit))return;
+ visit.place=restored.place;visit.restoreStatus=restored.restoreStatus;
+ refresh('retry');
+}
+async function relinkSavedStop(id){
+ if(relinkStop===id){relinkStop=null;render();return;}
+ relinkStop=id;render();
+ if(mapProvider!=='google')await switchGoogle();
+ if(relinkStop!==id||mapProvider!=='google')return;
+ $('#search').focus();
+ toast('Search for the original place or a replacement, then choose Link to this stop.');
+}
+const onboarding=setupOnboarding({
+ searchDestination:async(query,signal)=>{await prepareGoogle();return placesProvider.search(query,{signal,reason:'destination'});},
+ timeZone:(place,signal)=>placesProvider.timeZone(place,{signal,reason:'destination'}),
+ restoreDestination:async(id,savedZone,signal)=>{
+  await prepareGoogle();
+  const {Place}=await google.maps.importLibrary('places'),place=new Place({id,requestedLanguage:'en'});
+  await place.fetchFields({fields:['displayName','location']});
+  signal?.throwIfAborted();
+  const point={id,name:place.displayName,lat:place.location.lat(),lng:place.location.lng()};
+  return {...point,zone:savedZone||await placesProvider.timeZone(point,{signal,reason:'destination'})};
+ },
+ loadStops:(stops,savedZone,signal)=>Promise.all(stops.map(stop=>restoreStop(stop,savedZone,signal))),
+ prepareGlobe:async()=>{
+  await initialMap;
+  if(!mapboxRenderer?.ready)await switchMapbox({initial:true,arrival:true});
+  mapboxRenderer?.positionArrival();
+ },
+ raiseGlobe:reducedMotion=>mapboxRenderer?.raiseArrival(reducedMotion),
+ onJourney:async({trip,destination,visits:saved,arrival})=>{
+  controller?.abort();delayedCalculation.cancel();revision++;
+  tripDestination={...destination,center:{lat:destination.lat,lng:destination.lng}};
+  visits=saved;selected=edge=relinkStop=null;livePlaces=[];closePlacePane();
+  const savedSegments=Object.fromEntries(saved.slice(0,-1).map((stop,i)=>[segmentKey(stop,saved[i+1]),{mode:trip.stops[i].mode}]));
+  segments=reconcile(visits,savedSegments,defaults.mode);
+  schedule={date:trip.date,time:trip.time};
+  $('#date').value=schedule.date;$('#time').value=schedule.time;pickers.sync();
+  result={rows:[],routes:{}};loading=true;render();
+  if(arrival)await mapboxRenderer?.zoomArrival(tripDestination.center,matchMedia('(prefers-reduced-motion: reduce)').matches);
+  await switchGoogle({journeyCenter:tripDestination.center});
+  if(mapProvider!=='google')refresh('provider');
+  else if(!arrival&&visits.filter(v=>hasLocation(v.place)).length>1)$('#fit').onclick();
+ },
+ onSignOut:()=>{
+  visits=[];livePlaces=[];selected=edge=relinkStop=null;segments={};closePlacePane();
+  refresh('provider');switchMapbox({initial:true,arrival:true}).then(()=>mapboxRenderer?.positionArrival());
+ },
+});
+render();
+onboarding.open();
+updateProviderUI();const initialMap=configReady.then(()=>{
+ if(mapSwitch!==0)return;
+ return switchMapbox({initial:true});
+});

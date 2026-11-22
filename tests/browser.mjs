@@ -1,3 +1,4 @@
+import {backToList,connectGoogle} from './ui-helpers.mjs';
 const baseURL=process.env.TEST_BASE_URL||'http://127.0.0.1:5173';
 import {chromium} from 'playwright';
 import assert from 'node:assert/strict';
@@ -5,6 +6,9 @@ import {mkdir} from 'node:fs/promises';
 import {verifyChanges} from './browser-changes.mjs';
 import {measureRequests,verifyLiveFailures} from './browser-efficiency.mjs';
 import {verifyMapStyle} from './browser-map-style.mjs';
+import {verifyPlanner} from './browser-planner.mjs';
+import {verifyMapbox} from './browser-mapbox.mjs';
+import {verifyMapboxFlow} from './browser-mapbox-flow.mjs';
 await mkdir('test-results',{recursive:true});
 const browser=await chromium.launch({channel:'msedge',headless:true});
 const page=await browser.newPage({viewport:{width:1440,height:1200}});
@@ -32,6 +36,7 @@ await check('edited stay affects later times and survives actual drag of startin
  assert.equal(await page.locator('.map-edge').count(),3);
 });
 await check('waiting until opening changes downstream time',async()=>{
+ await page.locator('.visit').first().click();
  const before=await page.locator('.visit').nth(1).locator('.times').innerText();
  await page.locator('[data-wait]').first().check();await settled();
  assert.notEqual(await page.locator('.visit').nth(1).locator('.times').innerText(),before);
@@ -52,15 +57,15 @@ await check('search, add new destination, and independent map/card selection',as
  await page.locator('[data-node="'+id+'"]').dispatchEvent('click');
  assert.equal(await page.locator('.visit.selected').getAttribute('data-visit'),id);
  assert.equal(await page.locator('#details').isVisible(),true);
- await page.locator('#close-details').click();
+ await backToList(page);
  await page.locator('.visit').first().click();
  const selected=await page.locator('.visit.selected').getAttribute('data-visit');
  assert.equal(await page.locator('[data-node="'+selected+'"] circle').getAttribute('fill'),'#164F3B');
- await page.locator('#close-details').click();
+ await backToList(page);
 });
 await check('missing opening data visible when adding DDP',async()=>{
  await page.locator('#search').fill('동대문');await page.locator('.result').first().click();await page.locator('#add').click();await settled();
- assert.match(await page.locator('.visit').last().innerText(),/운영시간 정보가 없습니다/);await page.locator('#close-details').click();
+ assert.match(await page.locator('.visit').last().innerText(),/운영시간 정보가 없습니다/);await backToList(page);
 });
 await page.locator('footer details').evaluate(e=>e.open=true);
 await check('confirmed no transit switches to driving; errors never do',async()=>{
@@ -69,8 +74,10 @@ await check('confirmed no transit switches to driving; errors never do',async()=
  await page.locator('#scenario').selectOption('error');await settled();
  assert.match(await page.locator('.segment').first().innerText(),/경로 확인 필요/);
  assert.doesNotMatch(await page.locator('#visits').innerText(),/자동 전환/);
+ await page.locator('.visit').nth(2).click();
  assert.match(await page.locator('.visit').nth(2).innerText(),/시간 미확정/);
  await page.locator('#scenario').selectOption('no-routes');await settled();
+ await page.locator('.visit').last().click();
  assert.match(await page.locator('.visit').last().innerText(),/시간 미확정/);
  await page.locator('#scenario').selectOption('normal');await settled();
 });
@@ -101,10 +108,10 @@ await check('delete all and first added stay defaults to zero',async()=>{
  while(await page.locator('.visit').count()){await page.locator('[data-remove]').first().click();await settled();}
  assert.equal(await page.locator('.map-node').count(),0);
  await page.locator('#search').fill('청계천');await page.locator('.result').first().click();await page.locator('#add').click();await settled();
- assert.equal(await page.locator('[data-stay]').first().inputValue(),'0');await page.locator('#close-details').click();
+ assert.equal(await page.locator('[data-stay]').first().inputValue(),'0');await backToList(page);
 });
 await check('keyless integration explains setup and preserves demo',async()=>{
- await page.locator('#service').click();assert.match(await page.locator('#notice').innerText(),/키가 없습니다/);
+ await connectGoogle(page);assert.match(await page.locator('#notice').innerText(),/키가 없습니다/);
  assert.equal(await page.locator('#map').isVisible(),true);
 });
 await check('server protects credentials and missing key fails visibly',async()=>{
@@ -120,6 +127,9 @@ await verifyChanges(browser);
 await measureRequests(browser,baseURL);
 await verifyLiveFailures(browser,baseURL);
 await verifyMapStyle(browser,baseURL);
+await verifyPlanner(browser,baseURL);
+await verifyMapbox(browser,baseURL);
+await verifyMapboxFlow(browser,baseURL);
 console.log('All browser checks passed. No JavaScript errors.');
 }finally{await browser.close();}
 
