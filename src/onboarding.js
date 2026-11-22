@@ -91,7 +91,7 @@ export function setupOnboarding({searchDestination,timeZone,restoreDestination,l
       for(const place of choices){
         const button=document.createElement('button');button.type='button';
         button.textContent=[place.name,place.address].filter(Boolean).join(' · ');
-        button.onclick=async()=>{
+        const confirm=async()=>{
           controller?.abort();controller=new AbortController();
           const {signal}=controller;
           destinationResults('Checking local time zone…');
@@ -101,8 +101,14 @@ export function setupOnboarding({searchDestination,timeZone,restoreDestination,l
             selection={...place,zone};userDestination=searched;
             field('destination').value=place.name;
             updateZone();destinationResults('Destination confirmed.');
-          }catch(error){if(!signal.aborted){destinationResults('The local time zone could not be confirmed. Search again to retry.');}}
+          }catch{
+            if(signal.aborted)return;
+            destinationResults('The local time zone could not be confirmed.');
+            const retry=document.createElement('button');retry.type='button';retry.textContent='Try again';
+            retry.onclick=confirm;results.append(retry);
+          }
         };
+        button.onclick=confirm;
         results.append(button);
       }
     }catch(error){if(!signal.aborted)destinationResults('Could not search for destinations. Try again.');}

@@ -7,7 +7,9 @@ globalThis.fetch=async(url,{signal,body}={})=>{
    signal?.addEventListener('abort',()=>{clearTimeout(timer);reject(new DOMException('Aborted','AbortError'));},{once:true});
    if(signal?.aborted){clearTimeout(timer);reject(new DOMException('Aborted','AbortError'));}
  });
- if(target.hostname==='maps.googleapis.com')return {json:async()=>({status:'OK',timeZoneId:'Asia/Seoul'})};
+ if(target.hostname==='maps.googleapis.com')return {ok:true,status:200,json:async()=>target.searchParams.get('location')==='0,0'
+   ?{status:'REQUEST_DENIED',error_message:'This IP address is not authorized. Fixture secret.'}
+   :{status:'OK',timeZoneId:'Asia/Seoul'}};
  const args=JSON.parse(body);
  if(args.origin.location.latLng.latitude===0)return {ok:false,status:403,json:async()=>({error:'fixture'})};
  const steps=args.travelMode==='TRANSIT'?[

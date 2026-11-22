@@ -349,6 +349,7 @@ header {
 #arrival label { font: inherit; color: inherit; }
 #arrival input { width: 100%; min-width: 0; background: #FCF7ED; color: var(--bark); }
 #arrival button, #my-trips { border-color: var(--border); background: transparent; color: var(--cream); }
+#arrival #find-destination { background: var(--cream); color: var(--bark); }
 #arrival #arrival-begin { display: block; margin: 14px auto 0; background: var(--cream); color: var(--bark); }
 #arrival :is(input,button):focus-visible { outline: 2px solid var(--cream); outline-offset: 2px; }
 #arrival-zone { display: block; font-weight: 600; }

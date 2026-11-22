@@ -41,6 +41,14 @@ test('server boundary uses mocked Google only',async t=>{
    assert.equal((await route({...args,departure:'2020-01-01T00:00:00Z'})).status,422);
    assert.equal((await route({...args,from:{lat:0,lng:127}})).status,502);
  });
+ await t.test('a Google Time Zone denial in an HTTP 200 exposes only a safe diagnostic',async()=>{
+   const response=await fetch(base+'/api/timezone?lat=0&lng=0');
+   assert.equal(response.status,502);
+   const diagnostic=await response.json();
+   assert.equal(diagnostic.upstreamStatus,200);
+   assert.equal(diagnostic.code,'API_KEY_IP_ADDRESS_BLOCKED');
+   assert.doesNotMatch(JSON.stringify(diagnostic),/Fixture secret|fixture-server-key/);
+ });
  await t.test('client cancellation reaches the upstream request',async()=>{
    const c=new AbortController(),p=route({...args,to:{lat:38,lng:127}},c.signal);
    await new Promise(r=>setTimeout(r,35));c.abort();await assert.rejects(p,{name:'AbortError'});
