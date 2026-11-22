@@ -10,7 +10,7 @@ try{
  async function newPage(reducedMotion='no-preference'){
   const page=await browser.newPage({locale:'ko-KR',timezoneId:'America/Los_Angeles',viewport:{width:1440,height:900},reducedMotion});
   page.on('pageerror',error=>errors.push(error.message));
-  await mockGoogle(page,{mapboxToken:'pk.fixture.public',uiKit:true});
+  await mockGoogle(page,{mapboxToken:'pk.fixture.public',uiKit:true,usageGuard:true});
   await mockMapbox(page);
   await page.goto(base);
   await page.locator('#arrival').waitFor();
@@ -39,6 +39,13 @@ try{
   assert.ok(await begin.evaluate(e=>{const r=e.getBoundingClientRect(),s=e.closest('.arrival-scroll').getBoundingClientRect();return r.top>=s.top&&r.bottom<=s.bottom;}));
  }
  await page.locator('#arrival-name').fill('Morgan Rivera');
+ await page.route('**/api/usage/browser',route=>route.fulfill({status:429,json:{code:'API_RATE_LIMIT',message:'Too many requests. Please try again shortly.'}}));
+ await page.locator('#arrival-destination').fill('Seoul');
+ await page.locator('#find-destination').click();
+ await page.getByText('Too many requests. Please try again shortly.',{exact:true}).waitFor();
+ assert.equal(await page.locator('#arrival-destination').inputValue(),'Seoul');
+ assert.equal(await page.locator('#destination-results button').count(),0);
+ await page.unroute('**/api/usage/browser');
  assert.equal(await page.locator('#arrival-first input[type=email],#arrival-open-date,#arrival-open-time').count(),0);
  await page.locator('#arrival-destination').fill('Seoul');
  await page.locator('#find-destination').click();

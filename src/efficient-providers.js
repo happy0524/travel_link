@@ -78,8 +78,8 @@ export const timeZoneKey=p=>JSON.stringify([p.id||'',Number(p.lat).toFixed(8),Nu
 
 export class PlacesProvider {
   constructor({library=()=>google.maps.importLibrary('places'),fetcher=(...args)=>fetch(...args),
-    config=requestConfig,monitor=createMonitor(),now=Date.now}={}) {
-    Object.assign(this,{library,fetcher,config,monitor});
+    permit=async()=>({}),config=requestConfig,monitor=createMonitor(),now=Date.now}={}) {
+    Object.assign(this,{library,fetcher,permit,config,monitor});
     const options={maxEntries:config.maxCacheEntries,monitor,now};
     this.searches=new RequestPool({...options,api:'places-search',ttlMs:config.searchCacheTtlMs});
     this.details=new RequestPool({...options,api:'place-detail',ttlMs:config.placeCacheTtlMs});
@@ -94,7 +94,8 @@ export class PlacesProvider {
     if([...textQuery].length<this.config.minSearchLength)return [];
     const key=JSON.stringify([textQuery,language,8,searchFields,locationBias]);
     this.searches.retain(k=>k===key);
-    return this.searches.run(key,async()=>{
+    return this.searches.run(key,async requestSignal=>{
+      await this.permit(requestSignal);
       const {Place}=await this.library();
       const response=await Place.searchByText({textQuery,fields:searchFields,maxResultCount:8,language,
         ...(locationBias?{locationBias}:{})});
@@ -102,11 +103,12 @@ export class PlacesProvider {
     },{signal,reason,id:'current-query'});
   }
   describe(place,{signal,reason='place-selection'}={}) {
-    return this.details.run(place.id,async()=>{
+    return this.details.run(place.id,async requestSignal=>{
+      const options=await this.permit(requestSignal);
       const {Place}=await this.library();
       const p=place.native||new Place({id:place.id,requestedLanguage:language});
-      await p.fetchFields({fields:detailFields});
-      return normalizePlace(p);
+      await p.fetchFields({fields:options.googleMedia===false?detailFields.filter(field=>field!=='photos'):detailFields});
+      return normalizePlace(p,{photos:options.googleMedia!==false});
     },{signal,reason,id:place.id});
   }
   async inspect(place,{signal,reason='place-selection'}={}) {
@@ -120,13 +122,14 @@ export class PlacesProvider {
     return this.zones.run(timeZoneKey(place),async requestSignal=>{
       const response=await this.fetcher('/api/timezone?lat='+place.lat+'&lng='+place.lng,{signal:requestSignal});
       const data=await response.json();
-      if(!response.ok||!validZone(data.zone))throw Error('Time zone unavailable');
+      if(!response.ok||!validZone(data.zone))
+        throw Object.assign(Error(data.code?.startsWith('API_')?data.message:'Time zone unavailable'),{code:data.code});
       return data.zone;
     },{signal,reason,id:place.id||'coordinate'});
   }
 }
 
-export function normalizePlace(p) {
+export function normalizePlace(p,{photos=true}={}) {
   const lat=p.location.lat(),lng=p.location.lng();
   let hours=null;
   if(p.regularOpeningHours?.periods){
@@ -141,6 +144,6 @@ export function normalizePlace(p) {
   }
   return {id:p.id,name:p.displayName,address:p.formattedAddress,lat,lng,zone:null,hours,
     hoursLabel:'Regular weekly hours from Google · hours for this date are unconfirmed',category:'Google Places',source:'live',
-    photo:p.photos?.[0]?.getURI({maxWidth:500}),authors:p.photos?.[0]?.authorAttributions,
+    photo:photos?p.photos?.[0]?.getURI({maxWidth:500}):undefined,authors:photos?p.photos?.[0]?.authorAttributions:undefined,
     attributions:p.attributions};
 }

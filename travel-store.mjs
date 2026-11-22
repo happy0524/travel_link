@@ -34,9 +34,8 @@ function cleanJourney(body){
   return {name,destination,placeId,date,time,stops,...(zone?{zone}:{})};
 }
 
-export function createTravelStore(directory,json,{allowsOrigin,secureCookie}){
+export function createTravelStore(directory,json,{allowsOrigin,secureCookie,rateAuth}){
   let database,profileKey;
-  const failures=new Map();
   function db(){
     if(database)return database;
     mkdirSync(directory,{recursive:true});
@@ -66,12 +65,13 @@ export function createTravelStore(directory,json,{allowsOrigin,secureCookie}){
     }
     return createHmac('sha256',profileKey).update(JSON.stringify([normalizeName(name),number])).digest('hex');
   }
+  const getToken=req=>req.headers.cookie?.match(/(?:^|;\s*)travel_session=([a-f0-9]{64})(?:;|$)/)?.[1];
+  const getSession=token=>token&&db().prepare('SELECT session.user,account.credential_kind FROM session JOIN account ON account.id=session.user WHERE token=? AND expiry>?').get(digest(token),Date.now());
   async function handle(req,res,pathname){
     const matches=pathname.match(/^\/api\/trips(?:\/([\w-]+))?$/);
     if(pathname!=='/api/travel-session'&&!matches)return false;
     const send=(status,body)=>{json(res,status,body);return true;};
-    const token=req.headers.cookie?.match(/(?:^|;\s*)travel_session=([a-f0-9]{64})(?:;|$)/)?.[1];
-    const session=token&&db().prepare('SELECT session.user,account.credential_kind FROM session JOIN account ON account.id=session.user WHERE token=? AND expiry>?').get(digest(token),Date.now());
+    const token=getToken(req),session=getSession(token);
     if(req.method==='GET'){
       if(!matches)return send(200,{signedIn:!!session,needsProfile:!!session&&!db().prepare('SELECT 1 FROM traveler_profile WHERE user=?').get(session.user)});
       if(!session)return send(401,{message:'Sign in to see your trips.'});
@@ -124,10 +124,8 @@ export function createTravelStore(directory,json,{allowsOrigin,secureCookie}){
       !(oldNumber?validNumber(body.number):body.action==='legacy-login'&&validSecret(body.password))){
       return send(400,{message:'Enter your previous email and credential.'});
     }
-    const now=Date.now(),key=req.socket.remoteAddress;
-    const attempts=(failures.get(key)||[]).filter(t=>now-t<60_000);
-    if(attempts.length>=16)return send(429,{message:'Too many attempts. Try again in a minute.'});
-    failures.set(key,[...attempts,now]);
+    const now=Date.now();
+    rateAuth(req,session?.user);
     let user;
     if(profile){
       const lookup=lookupProfile(name,body.number);
@@ -170,5 +168,6 @@ export function createTravelStore(directory,json,{allowsOrigin,secureCookie}){
     res.setHeader('Set-Cookie',cookie(newToken));
     return send(200,{signedIn:true,needsProfile:!profile&&!db().prepare('SELECT 1 FROM traveler_profile WHERE user=?').get(user)});
   }
+  handle.user=req=>getSession(getToken(req))?.user;
   return handle;
 }

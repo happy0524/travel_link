@@ -1,5 +1,7 @@
 # Render 배포
 
+공개 시연 전 [지도 API 사용 한도](API_USAGE_LIMITS.md)의 제공자 설정과 예산 기준을 확인하세요.
+
 ## 공개 링크 만들기
 
 1. Render Dashboard에서 **New → Web Service**를 선택하고 GitHub의 `happy0524/travel_link` 저장소를 연결합니다. 브랜치는 `travel_link-v1.0`, 런타임은 **Node**, 인스턴스는 영구 디스크를 지원하는 유료 인스턴스 하나를 선택합니다.

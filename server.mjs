@@ -7,6 +7,7 @@ import {RequestPool,createMonitor} from './src/requests.js';
 import {requestConfig} from './src/request-config.js';
 import {language} from './src/ui-copy.js';
 import {createTravelStore} from './travel-store.mjs';
+import {clientIp,createApiUsage,UsageError} from './api-usage.mjs';
 const root=fileURLToPath(new URL('.',import.meta.url));
 const browserKey=process.env.GOOGLE_MAPS_BROWSER_KEY||'',serverKey=process.env.GOOGLE_MAPS_SERVER_KEY||'';
 const port=Number(process.env.PORT||5173);
@@ -31,7 +32,10 @@ const monitor=createMonitor(requestMonitor);
 const routeRequests=new RequestPool({api:'route',monitor});
 const zoneRequests=new RequestPool({api:'timezone',monitor});
 const json=(res,status,data)=>{res.writeHead(status,{'Content-Type':'application/json; charset=utf-8','Cache-Control':'no-store'});res.end(JSON.stringify(data));};
-const travelStore=createTravelStore(dataDirectory,json,{allowsOrigin,secureCookie:publicOrigin?.startsWith('https://')});
+const usage=createApiUsage(dataDirectory);
+const travelStore=createTravelStore(dataDirectory,json,{allowsOrigin,secureCookie:publicOrigin?.startsWith('https://'),
+ rateAuth:(req,user)=>{usage.rate('auth-ip:'+clientIp(req,hosted),16);if(user)usage.rate('auth-user:'+user,16);}});
+const admit=req=>usage.admit(clientIp(req,hosted),()=>travelStore.user(req));
 const coords=p=>p&&Number.isFinite(p.lat)&&Number.isFinite(p.lng)&&Math.abs(p.lat)<=90&&Math.abs(p.lng)<=180;
 function timeZoneError(body){
  const reason=Array.isArray(body?.error?.details)?body.error.details.find(item=>typeof item?.reason==='string')?.reason:null;
@@ -60,17 +64,28 @@ const server=http.createServer(async(req,res)=>{
  try{
  const url=new URL(req.url,'http://localhost');
  if(await travelStore(req,res,url.pathname))return;
- if(url.pathname==='/api/config'){json(res,200,{browserKey,mapId,mapboxToken,serverReady:!!serverKey,requestMonitor});return;}
+ if(url.pathname==='/api/config'){
+  if(!usage.paused)admit(req);
+  json(res,200,{browserKey:usage.paused?'':browserKey,mapId,
+   mapboxToken:usage.paused||!usage.browser.mapbox?'':mapboxToken,
+   serverReady:!usage.paused&&!!serverKey,requestMonitor,usageGuard:true,apiPaused:usage.paused,browserOptions:usage.browser});return;
+ }
+ if(url.pathname==='/api/usage/browser'&&req.method==='POST'){
+  if(!allowsOrigin(req)){json(res,403,{message:'Request origin is not allowed.'});return;}
+  admit(req);
+  json(res,200,{allowed:true,browserOptions:usage.browser});return;
+ }
  if(url.pathname==='/api/debug/requests'&&requestMonitor){json(res,200,monitor.snapshot());return;}
- if(url.pathname==='/api/timezone'){
+ if(url.pathname==='/api/timezone'&&req.method==='GET'){
  if(!serverKey){json(res,503,{code:'TIME_ZONE_KEY_MISSING',message:'The server key for the Time Zone API is missing.'});return;}
+ admit(req);
  const lat=Number(url.searchParams.get('lat')),lng=Number(url.searchParams.get('lng'));
  if(!url.searchParams.has('lat')||!url.searchParams.has('lng')||!coords({lat,lng})){json(res,400,{message:'Invalid coordinates.'});return;}
  const query=new URLSearchParams({location:lat+','+lng,timestamp:String(Math.floor(Date.now()/1000)),key:serverKey});
- const {ok,status,body}=await zoneRequests.run(JSON.stringify([lat.toFixed(8),lng.toFixed(8)]),async signal=>{
+ const {ok,status,body}=await zoneRequests.run(JSON.stringify([lat.toFixed(8),lng.toFixed(8)]),signal=>usage.upstream('timezone',signal,async()=>{
  const r=await fetch('https://maps.googleapis.com/maps/api/timezone/json?'+query,{signal:AbortSignal.any([signal,AbortSignal.timeout(10000)])});
  return {ok:r.ok,status:r.status,body:await r.json()};
- },{signal:client.signal,reason:'selected-place',id:'coordinate'});
+ }),{signal:client.signal,reason:'selected-place',id:'coordinate'});
  if(!ok||body?.status!=='OK'||typeof body.timeZoneId!=='string'){
   const code=timeZoneError(body);
   console.warn('Google Time Zone request failed', {upstreamStatus:status,code});
@@ -81,6 +96,7 @@ const server=http.createServer(async(req,res)=>{
  if(url.pathname==='/api/route'&&req.method==='POST'){
  if((hosted||req.headers.origin)&&!allowsOrigin(req)){json(res,403,{message:'Request origin is not allowed.'});return;}
  if(!serverKey){json(res,503,{message:'The server key for the Routes API is missing.'});return;}
+ admit(req);
  let body='';for await(const chunk of req){body+=chunk;if(body.length>8192){json(res,413,{message:'Request is too large.'});return;}}
  let args;try{args=JSON.parse(body);}catch{json(res,400,{message:'Invalid JSON.'});return;}
  const {from,to,mode,departure}=args;
@@ -94,10 +110,11 @@ const server=http.createServer(async(req,res)=>{
  if(mode==='DRIVE')payload.routingPreference='TRAFFIC_AWARE';
  const fields=['routes.duration','routes.distanceMeters','routes.polyline.encodedPolyline'];
  if(mode==='TRANSIT')fields.push('routes.localizedValues.transitFare','routes.legs.steps.travelMode','routes.legs.steps.distanceMeters','routes.legs.steps.staticDuration','routes.legs.steps.navigationInstruction.instructions','routes.legs.steps.transitDetails');
- const {ok,status,data}=await routeRequests.run(JSON.stringify(payload),async signal=>{
+ const sku=mode==='DRIVE'?'routesPro':'routesEssentials';
+ const {ok,status,data}=await routeRequests.run(JSON.stringify(payload),signal=>usage.upstream(sku,signal,async()=>{
  const response=await fetch('https://routes.googleapis.com/directions/v2:computeRoutes',{method:'POST',headers:{'Content-Type':'application/json','X-Goog-Api-Key':serverKey,'X-Goog-FieldMask':fields.join(',')},body:JSON.stringify(payload),signal:AbortSignal.any([signal,AbortSignal.timeout(15000)])});
  return {ok:response.ok,status:response.status,data:await response.json()};
- },{signal:client.signal,reason:'schedule',id:'coordinate-segment',mode});
+ }),{signal:client.signal,reason:'schedule',id:'coordinate-segment',mode});
  if(!ok){json(res,502,{message:'Google Routes request failed ('+status+'). Check authentication, quotas, and regional availability.'});return;}
  if(!data.routes?.length){json(res,200,{status:'no-route',message:'No route available.'});return;}
  const route=data.routes[0],seconds=parseFloat(route.duration);
@@ -113,7 +130,16 @@ const server=http.createServer(async(req,res)=>{
  if(pathname!=='/'&&pathname!=='/index.html'&&!/^\/src\/[a-z-]+\.(js|css)$/.test(pathname)&&!/^\/public\/assets\/[a-z0-9-]+\.(png|svg|woff2|ttf|otf)$/.test(pathname)){json(res,404,{message:'Not found'});return;}
  const filename=path.join(root,pathname==='/'?'index.html':pathname.slice(1));
  const data=await readFile(filename);const mime={'.css':'text/css; charset=utf-8','.js':'text/javascript; charset=utf-8','.png':'image/png','.svg':'image/svg+xml','.woff2':'font/woff2','.ttf':'font/ttf','.otf':'font/otf'}[path.extname(filename)]||'text/html; charset=utf-8';res.writeHead(200,{'Content-Type':mime,'X-Content-Type-Options':'nosniff','Cache-Control':'no-cache'});res.end(req.method==='HEAD'?undefined:data);
- }catch(e){if(!client.signal.aborted)json(res,e.code==='ENOENT'?404:502,{message:e.code==='ENOENT'?'Not found':'The request failed. Check your network and API settings.'});}
+ }catch(e){
+  if(client.signal.aborted)return;
+  if(e instanceof UsageError){
+   if(e.retryAfter)res.setHeader('Retry-After',e.retryAfter);
+   json(res,e.status,{code:e.code,message:e.message});return;
+  }
+  json(res,e.code==='ENOENT'?404:502,{message:e.code==='ENOENT'?'Not found':'The request failed. Check your network and API settings.'});
+ }
 });
+server.requestTimeout=30000;
+server.headersTimeout=15000;
 server.listen(port,host,()=>console.log('Travel Link running at http://'+(hosted?host:'localhost')+':'+server.address().port));
 

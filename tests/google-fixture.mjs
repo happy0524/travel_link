@@ -1,8 +1,8 @@
 // Local Google interface fixture. Every Google network URL is blocked.
-export async function mockGoogle(page,{mapId='',mapboxToken='',uiKit=false,zone='Asia/Seoul'}={}) {
+export async function mockGoogle(page,{mapId='',mapboxToken='',uiKit=false,zone='Asia/Seoul',usageGuard=false}={}) {
   const calls=[];calls.timezones=[];
   await page.route(/https:\/\/[^/]*(googleapis|gstatic)\.com\//,route=>route.abort());
-  await page.route('**/api/config',route=>route.fulfill({json:{browserKey:'fixture',mapId,mapboxToken,serverReady:true,requestMonitor:true}}));
+  await page.route('**/api/config',route=>route.fulfill({json:{browserKey:'fixture',mapId,mapboxToken,serverReady:true,requestMonitor:true,usageGuard}}));
   await page.route('**/api/timezone?*',route=>{calls.timezones.push(route.request().url());return route.fulfill({json:{zone}});});
   await page.route('**/api/route',async route=>{
     const body=route.request().postDataJSON();calls.push(body);

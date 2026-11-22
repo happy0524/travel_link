@@ -48,7 +48,7 @@ export function rememberGooglePlaceId(place,id){
   if(place.source==='example')try{localStorage.setItem(sampleLinkKey(place),id);}catch{}
 }
 
-export async function findGoogleCandidates(place,key,signal,{rematch=false}={}){
+export async function findGoogleCandidates(place,key,signal,{rematch=false,permit=async()=>{}}={}){
   if(!key)throw new Error(ui.googleKeyMissing);
   await loadGoogleMaps(key);
   const {Place}=await google.maps.importLibrary('places');
@@ -59,6 +59,7 @@ export async function findGoogleCandidates(place,key,signal,{rematch=false}={}){
     if(linkedId)return {id:linkedId};
     if(place.source==='live')return {id:place.id};
   }
+  await permit(signal);
   const textQuery=[place.name,place.address||'New York'].join(', ');
   const {places}=await Place.searchByText({textQuery,fields:['id','displayName','formattedAddress','location','primaryType','types'],
     maxResultCount:5,language,locationBias:{lat:place.lat,lng:place.lng}});
@@ -66,12 +67,12 @@ export async function findGoogleCandidates(place,key,signal,{rematch=false}={}){
   return resolveGoogleCandidates(place,places,{rematch});
 }
 
-export function createGoogleWidget(placeId,{Place,compact=false,onLoad,onError}){
+export function createGoogleWidget(placeId,{Place,compact=false,media=true,onLoad,onError}){
   const widget=document.createElement(compact?'gmp-place-details-compact':'gmp-place-details');
   const request=document.createElement('gmp-place-details-place-request');
   request.place=new Place({id:placeId,requestedLanguage:language});
   widget.append(request);
-  const tags=compact?['name','address','type']:['name','address','media','rating','type','summary','opening-hours','website','attribution'];
+  const tags=compact?['name','address','type']:['name','address',...(media?['media','summary']:[]),'rating','type','opening-hours','website','attribution'];
   for(const tag of tags)widget.append(document.createElement('gmp-place-'+tag));
   if(onLoad)widget.addEventListener('gmp-load',onLoad,{once:true});
   if(onError)widget.addEventListener('gmp-error',onError,{once:true});

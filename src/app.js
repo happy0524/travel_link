@@ -19,7 +19,8 @@ import {formatDuration,locale,ui} from './ui-copy.js';
 import {mapPalette} from './map-palette.js';
 import {dateInZone,setupOnboarding} from './onboarding.js';
 import {referenceForPlace,restorePlaceId,stopReference} from './trip-stops.js';
-const mapboxSearch=new MapboxSearch(()=>config.mapboxToken);
+const mapboxPermit=signal=>browserPermit(signal,'mapbox');
+const mapboxSearch=new MapboxSearch(()=>config.mapboxToken,{permit:mapboxPermit});
 const delayedMapboxSearch=debounce(searchMapbox,350);
 const $=s=>document.querySelector(s);
 const esc=s=>String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
@@ -31,9 +32,9 @@ let googleDetailsController;
 let mapProvider='mapbox',mapboxRenderer=null,mapSwitch=0,pendingProvider=null;
 let tripDestination=destination;
 const monitor=createMonitor(requestConfig.instrumentation);
-const placesProvider=new PlacesProvider({monitor});
+const placesProvider=new PlacesProvider({monitor,permit:browserPermit});
 const liveProvider=new EfficientRouteProvider(new LiveProvider(),{monitor});
-const mapboxDirections=new EfficientRouteProvider(new MapboxDirections(()=>config.mapboxToken),{monitor});
+const mapboxDirections=new EfficientRouteProvider(new MapboxDirections(()=>config.mapboxToken,{permit:mapboxPermit}),{monitor});
 let placeRevision=0,placeController,searchController;
 const delayedCalculation=debounce(runCalculation,requestConfig.editDebounceMs);
 const delayedSearch=debounce(()=>searchPlaces('search-submit'),requestConfig.searchDebounceMs);
@@ -61,6 +62,7 @@ function add(place){
  const mismatch=placeZoneMismatch(place);
  if(mismatch){toast(mismatch);return;}
  const missing=visits.find(v=>v.id===relinkStop&&v.restoreStatus==='relink');
+ if(!missing&&visits.length>=100){toast('This trip can hold up to 100 stops.');return;}
  const v=missing||{id:crypto.randomUUID(),stay:defaults.stay,wait:false};
  v.place=place;
  v.reference=referenceForPlace(place);v.restoreStatus=null;relinkStop=null;
@@ -228,7 +230,7 @@ async function selectPlace(p){
  try{
   detail=box?(p.suggestion?await mapboxSearch.retrieve(p,signal):p):await placesProvider.describe(p,{signal});
  }catch(e){
-  if(!signal.aborted&&token===placeRevision)showPlaceStatus(box?e.message:'Could not load the place details.',()=>selectPlace(p));
+  if(!signal.aborted&&token===placeRevision)showPlaceStatus(box||e.code?.startsWith('API_')?e.message:'Could not load the place details.',()=>selectPlace(p));
   return;
  }
  if(token!==placeRevision)return;
@@ -243,8 +245,8 @@ async function checkPlaceZone(detail,token,signal){
   selectedPlace={...detail,zone:confirmed};
   if(mapProvider==='mapbox')focusPlace(selectedPlace);
   renderMap();renderDetails();retainPlaces();
- }catch{
-  if(!signal.aborted&&token===placeRevision)showPlaceStatus('Couldn’t verify this place’s time zone. Try again.',()=>checkPlaceZone(detail,token,signal));
+ }catch(error){
+  if(!signal.aborted&&token===placeRevision)showPlaceStatus(error.code?.startsWith('API_')?error.message:'Couldn’t verify this place’s time zone. Try again.',()=>checkPlaceZone(detail,token,signal));
  }
 }
 function showPlacePane(mode){
@@ -310,13 +312,16 @@ async function openGoogleDetails(place,{rematch=false,moveMap=true}={}){
  };
  const retryMatch=()=>openGoogleDetails(place,{rematch,moveMap:false});
  let Place;
- function showWidget(id){
+ async function showWidget(id){
   status('Loading Google Maps place details…');
   panel.scrollTop=0;
   const retry=()=>showWidget(id);
+  let options;
+  try{options=await browserPermit(signal,'googleWidgets');}
+  catch(error){if(!signal.aborted)status(error.message,retry);return;}
   const timeout=setTimeout(()=>{if(!signal.aborted)status('Google Places UI Kit timed out.',retry);},15000);
   signal.addEventListener('abort',()=>clearTimeout(timeout),{once:true});
-  const widget=createGoogleWidget(id,{Place,onLoad:()=>{
+  const widget=createGoogleWidget(id,{Place,media:options.googleMedia!==false,onLoad:()=>{
    clearTimeout(timeout);
    if(signal.aborted||!widget.isConnected)return;
    const visit=findDestination(visits,place);
@@ -341,7 +346,8 @@ async function openGoogleDetails(place,{rematch=false,moveMap=true}={}){
  }
  status('Finding the matching place in Google Maps…');
  try{
-  const match=await findGoogleCandidates(place,config.browserKey,signal,{rematch});
+  if(config.browserOptions?.googleWidgets===false)throw Error('Google place widgets are disabled.');
+  const match=await findGoogleCandidates(place,config.browserKey,signal,{rematch,permit:s=>browserPermit(s,'googleWidgets')});
   if(signal.aborted)return;
   ({Place}=await google.maps.importLibrary('places'));
   if(signal.aborted)return;
@@ -352,6 +358,7 @@ async function openGoogleDetails(place,{rematch=false,moveMap=true}={}){
   const candidateTimeout=setTimeout(()=>{if(!signal.aborted&&host.querySelector('.google-candidate')&&!host.querySelector('.google-candidate button:enabled'))status('Google place candidates took too long to load.',retryMatch);},15000);
   signal.addEventListener('abort',()=>clearTimeout(candidateTimeout),{once:true});
   for(const candidate of match.candidates){
+   await browserPermit(signal,'googleWidgets');
    const entry=document.createElement('div');entry.className='google-candidate';
    const confirm=document.createElement('button');confirm.textContent='Select this Google place';confirm.disabled=true;
    const widget=createGoogleWidget(candidate.id,{Place,compact:true,onLoad:()=>{confirm.disabled=false;},onError:()=>{
@@ -361,7 +368,7 @@ async function openGoogleDetails(place,{rematch=false,moveMap=true}={}){
    }});
    confirm.onclick=()=>{clearTimeout(candidateTimeout);showWidget(candidate.id);};entry.append(widget,confirm);host.append(entry);
   }
- }catch(error){if(!signal.aborted)status(error.message.startsWith('Google')?error.message:'Google place search failed. Check Places API (New), key restrictions, and the network.',retryMatch);}
+ }catch(error){if(!signal.aborted)status(error.code?.startsWith('API_')||error.message.startsWith('Google')?error.message:'Google place search failed. Check Places API (New), key restrictions, and the network.',retryMatch);}
 }
 function transitClock(instant){
  if(!instant||!Number.isFinite(Date.parse(instant)))return '';
@@ -552,7 +559,7 @@ async function searchPlaces(reason){
     locationBias:tripDestination.center});
    if(rev!==searchRevision){monitor.record({api:'places-search',reason,id:'current-query',status:'stale-discarded'});return;}
    livePlaces=list;retainPlaces();showResults(livePlaces);renderMap();
- }catch(e){if(e.name!=='AbortError'&&rev===searchRevision)$('#results').textContent='Place search failed. Check API settings and regional availability.';}
+ }catch(e){if(e.name!=='AbortError'&&rev===searchRevision)$('#results').textContent=e.code?.startsWith('API_')?e.message:'Place search failed. Check API settings and regional availability.';}
 }
 async function searchMapbox(){
  const q=$('#search').value.trim();if(q.length<2){showSearchStatus(ui.minQuery);return;}
@@ -561,6 +568,8 @@ async function searchMapbox(){
  catch(e){if(e.name!=='AbortError'&&rev===searchRevision)$('#results').textContent=e.message;}
 }
 async function connectGoogle(token,journeyCenter){
+ await browserPermit();
+ if(token!==mapSwitch)return;
  if(!config.browserKey)throw Error(ui.googleKeyMissing);
  await loadGoogleMaps(config.browserKey,{monitor});
  if(token!==mapSwitch)return;
@@ -640,6 +649,8 @@ async function switchMapbox(options={}){
  $('#mapbox-error').hidden=true;
  try{
   await configReady;if(token!==mapSwitch)return;
+  await mapboxPermit();
+  if(token!==mapSwitch)return;
   if(!/^pk\.[A-Za-z0-9._-]+$/.test(config.mapboxToken||''))throw Error(ui.mapboxTokenMissing);
   await loadMapbox();if(token!==mapSwitch)return;
   mapboxRenderer?.destroy();
@@ -706,6 +717,22 @@ document.addEventListener('click',e=>{if(!e.target.closest('.map-provider-picker
 $('.map-provider-picker').onkeydown=e=>{if(e.key==='Escape'){closeProviderMenu();$('#service').focus();}if(['ArrowDown','ArrowUp'].includes(e.key)){e.preventDefault();const buttons=[...$('#map-provider-menu').querySelectorAll('button')],index=buttons.indexOf(document.activeElement);$('#map-provider-menu').hidden=false;$('#service').setAttribute('aria-expanded','true');buttons[(index+(e.key==='ArrowDown'?1:-1)+buttons.length)%buttons.length].focus();}};
 window.addEventListener('pagehide',()=>mapboxRenderer?.destroy());
 const configReady=fetch('/api/config').then(r=>r.json()).then(c=>{config=c;monitor.setEnabled(c.requestMonitor===true);if(c.requestMonitor)window.travelLinkRequests=monitor;}).catch(()=>{});
+async function browserPermit(signal,feature){
+ await configReady;
+ signal?.throwIfAborted();
+ let options=config.browserOptions||{};
+ if(config.code?.startsWith('API_'))throw Object.assign(Error(config.message),{code:config.code});
+ if(config.usageGuard){
+  const timeout=AbortSignal.timeout(8000);
+  const response=await fetch('/api/usage/browser',{method:'POST',signal:signal?AbortSignal.any([signal,timeout]):timeout});
+  const data=await response.json();
+  if(!response.ok||!data.allowed)throw Object.assign(Error(data.message||'Map services are temporarily unavailable.'),{code:data.code||'API_UNAVAILABLE'});
+  options=data.browserOptions||{};
+ }
+ signal?.throwIfAborted();
+ if(feature&&options[feature]===false)throw Object.assign(Error('This map feature is disabled.'),{code:'API_FEATURE_DISABLED'});
+ return options;
+}
 decorateWoodPanels();
 const narrowItinerary=matchMedia('(max-width: 800px)');
 function sizeDayOverview(){ $('#day-overview').open=!narrowItinerary.matches; }
@@ -713,6 +740,7 @@ sizeDayOverview();narrowItinerary.addEventListener('change',sizeDayOverview);
 const pickers=setupSchedulePickers({date:$('#date'),time:$('#time'),today:()=>dateInZone(zone())});
 async function prepareGoogle(){
  await configReady;
+ if(config.apiPaused||config.code?.startsWith('API_'))throw Object.assign(Error(config.message||'Map, place and route services are temporarily paused.'),{code:config.code||'API_PAUSED'});
  if(!config.browserKey)throw Error(ui.googleKeyMissing);
  await loadGoogleMaps(config.browserKey,{monitor});
 }
@@ -757,6 +785,7 @@ const onboarding=setupOnboarding({
  timeZone:(place,signal)=>placesProvider.timeZone(place,{signal,reason:'destination'}),
  restoreDestination:async(id,savedZone,signal)=>{
   await prepareGoogle();
+  await browserPermit(signal);
   const {Place}=await google.maps.importLibrary('places'),place=new Place({id,requestedLanguage:'en'});
   await place.fetchFields({fields:['displayName','location']});
   signal?.throwIfAborted();
