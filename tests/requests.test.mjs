@@ -21,6 +21,16 @@ const setup=(config={})=>{
 test('four visits request exactly three adjacent segments; identical recalculation adds zero',async()=>{
  const s=setup(),v=visits();await s.calc(v);assert.equal(s.calls.length,3);await s.calc(v);assert.equal(s.calls.length,3);
 });
+test('retrying one route preserves cached siblings with the same departure',async()=>{
+ const s=setup(),v=visits(),segments=reconcile(v);
+ for(const segment of Object.values(segments))segment.mode='WALK';
+ await s.calc(v,{segments});
+ s.provider.retry(v[1].place,v[2].place,'WALK');
+ await s.calc(v,{segments});
+ assert.equal(s.calls.length,4);
+ assert.equal(s.calls.at(-1).from.id,v[1].place.id);
+ assert.equal(s.calls.at(-1).to.id,v[2].place.id);
+});
 test('adding a destination preserves unchanged active segments',async()=>{
  const s=setup(),v=visits();for(let i=1;i<=4;i++)await s.calc(v.slice(0,i));assert.equal(s.calls.length,3);
 });

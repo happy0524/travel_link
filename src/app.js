@@ -35,11 +35,12 @@ const monitor=createMonitor(requestConfig.instrumentation);
 const placesProvider=new PlacesProvider({monitor,permit:browserPermit});
 const liveProvider=new EfficientRouteProvider(new LiveProvider(),{monitor});
 const mapboxDirections=new EfficientRouteProvider(new MapboxDirections(()=>config.mapboxToken,{permit:mapboxPermit}),{monitor});
-let placeRevision=0,placeController,searchController;
+let placeRevision=0,placeController,searchController,pendingMapboxSearch,pendingGoogleSearch;
 const delayedCalculation=debounce(runCalculation,requestConfig.editDebounceMs);
 const delayedSearch=debounce(()=>searchPlaces('search-submit'),requestConfig.searchDebounceMs);
 const googleRoutes={
  setActive:(...args)=>liveProvider.setActive(...args),
+ retry:(...args)=>liveProvider.retry(...args),
  route:args=>{
   const points=[args.from,args.to];
   if(points.some(p=>!hasLocation(p)))return Promise.resolve({status:'unsupported',message:'Restore or relink the stop before calculating this route.'});
@@ -298,7 +299,8 @@ function appendPlaceActions(container,place){
  const note=document.createElement('p');note.className='place-zone-note';note.role='status';note.hidden=true;
  actions.append(note,button);container.append(actions);updateAddAction();return actions;
 }
-async function openGoogleDetails(place,{rematch=false,moveMap=true}={}){
+async function openGoogleDetails(place,{rematch=false,moveMap=true,retry=false}={}){
+ if(!rematch&&!retry&&selectedPlace===place&&googleDetailsController&&!googleDetailsController.signal.aborted)return;
  placeRevision++;placeController?.abort();googleDetailsController?.abort();selectedPlace=place;
  showPlacePane('details');const panel=$('#details');panel.scrollTop=0;
  if(moveMap&&mapProvider==='mapbox')focusPlace(place);
@@ -310,7 +312,7 @@ async function openGoogleDetails(place,{rematch=false,moveMap=true}={}){
   host.replaceChildren();const p=document.createElement('p');p.role='status';p.textContent=message;host.append(p);
   if(retry){const button=document.createElement('button');button.type='button';button.textContent=ui.retry;button.onclick=retry;host.append(button);}
  };
- const retryMatch=()=>openGoogleDetails(place,{rematch,moveMap:false});
+ const retryMatch=()=>openGoogleDetails(place,{rematch,moveMap:false,retry:true});
  let Place;
  async function showWidget(id){
   status('Loading Google Maps place details…');
@@ -355,10 +357,12 @@ async function openGoogleDetails(place,{rematch=false,moveMap=true}={}){
   if(!match.candidates.length){status('No matching Google place was found near these coordinates.',retryMatch);return;}
   status('Check the address and category, then select the matching Google place.');
   let remaining=match.candidates.length;
+  let candidateChosen=false;
   const candidateTimeout=setTimeout(()=>{if(!signal.aborted&&host.querySelector('.google-candidate')&&!host.querySelector('.google-candidate button:enabled'))status('Google place candidates took too long to load.',retryMatch);},15000);
   signal.addEventListener('abort',()=>clearTimeout(candidateTimeout),{once:true});
   for(const candidate of match.candidates){
    await browserPermit(signal,'googleWidgets');
+   if(candidateChosen)return;
    const entry=document.createElement('div');entry.className='google-candidate';
    const confirm=document.createElement('button');confirm.textContent='Select this Google place';confirm.disabled=true;
    const widget=createGoogleWidget(candidate.id,{Place,compact:true,onLoad:()=>{confirm.disabled=false;},onError:()=>{
@@ -366,7 +370,10 @@ async function openGoogleDetails(place,{rematch=false,moveMap=true}={}){
     entry.remove();remaining--;
     if(!remaining){clearTimeout(candidateTimeout);status('Google rejected the place preview request. Check that Places UI Kit is enabled and review the key restrictions.',retryMatch);}
    }});
-   confirm.onclick=()=>{clearTimeout(candidateTimeout);showWidget(candidate.id);};entry.append(widget,confirm);host.append(entry);
+   confirm.onclick=()=>{
+    if(candidateChosen)return;
+    candidateChosen=true;clearTimeout(candidateTimeout);showWidget(candidate.id);
+   };entry.append(widget,confirm);host.append(entry);
   }
  }catch(error){if(!signal.aborted)status(error.code?.startsWith('API_')||error.message.startsWith('Google')?error.message:'Google place search failed. Check Places API (New), key restrictions, and the network.',retryMatch);}
 }
@@ -411,7 +418,9 @@ function renderEdge(){
  panel.innerHTML='<div class="edge-settings-content"><button class="close" id="close-edge" aria-label="Close travel mode">×</button><h3>'+(i+1)+' → '+(i+2)+' travel mode</h3><div class="mode-buttons">'+controls+'</div>'+info+'</div>';
  panel.firstElementChild.scrollTop=previous;
  $('#close-edge').onclick=()=>{edge=null;renderEdge();renderMap();};
- $('#retry-route')?.addEventListener('click',()=>{provider().pool?.clear();if(!box)liveProvider.pool.clear();refresh('retry');});
+ $('#retry-route')?.addEventListener('click',()=>{
+  provider().retry(visits[i].place,visits[i+1].place,mode);refresh('retry');
+ });
  panel.querySelectorAll('[data-mode]').forEach(button=>button.onclick=()=>{
   const next=button.dataset.mode;
   if(mode===next)return;
@@ -525,8 +534,8 @@ $('#visits').ondragover=e=>{const c=e.target.closest('[data-visit]');if(c){e.pre
 $('#visits').ondragleave=e=>e.target.closest('[data-visit]')?.classList.remove('drag-over');
 $('#visits').ondrop=e=>{e.preventDefault();const card=e.target.closest('[data-visit]');if(card)reorder(dragId||e.dataTransfer.getData('text/plain'),visits.findIndex(v=>v.id===card.dataset.visit));dragId=null;};
 $('#visits').ondragend=()=>{dragId=null;document.querySelectorAll('.dragging,.drag-over').forEach(e=>e.classList.remove('dragging','drag-over'));};
-$('#date').onchange=()=>{schedule.date=$('#date').value;refresh('date');if(selectedPlace&&!googleDetailsController)renderDetails();};
-$('#time').onchange=()=>{schedule.time=$('#time').value;refresh('time');};
+$('#date').onchange=()=>{if(schedule.date===$('#date').value)return;schedule.date=$('#date').value;refresh('date');if(selectedPlace&&!googleDetailsController)renderDetails();};
+$('#time').onchange=()=>{if(schedule.time===$('#time').value)return;schedule.time=$('#time').value;refresh('time');};
 $('#date').oninput=$('#date').onchange;$('#time').oninput=$('#time').onchange;
 function showResults(list){
  showPlacePane('results');
@@ -552,20 +561,27 @@ $('#search-form').onsubmit=e=>{
  delayedSearch();
 };
 async function searchPlaces(reason){
+ const query=$('#search').value.trim().replace(/\s+/g,' ');
+ if(pendingGoogleSearch?.query===query&&pendingGoogleSearch.revision===searchRevision)return;
  const rev=++searchRevision;searchController?.abort();searchController=new AbortController();
+ pendingGoogleSearch={query,revision:rev};
  showSearchStatus('Searching Google Places…');
  try{
-   const list=await placesProvider.search($('#search').value,{signal:searchController.signal,reason,
+   const list=await placesProvider.search(query,{signal:searchController.signal,reason,
     locationBias:tripDestination.center});
    if(rev!==searchRevision){monitor.record({api:'places-search',reason,id:'current-query',status:'stale-discarded'});return;}
    livePlaces=list;retainPlaces();showResults(livePlaces);renderMap();
  }catch(e){if(e.name!=='AbortError'&&rev===searchRevision)$('#results').textContent=e.code?.startsWith('API_')?e.message:'Place search failed. Check API settings and regional availability.';}
+ finally{if(pendingGoogleSearch?.revision===rev)pendingGoogleSearch=null;}
 }
 async function searchMapbox(){
  const q=$('#search').value.trim();if(q.length<2){showSearchStatus(ui.minQuery);return;}
-   const rev=++searchRevision;searchController?.abort();searchController=new AbortController();showSearchStatus('Searching Mapbox…');
+ if(pendingMapboxSearch?.query===q&&pendingMapboxSearch.revision===searchRevision)return;
+ const rev=++searchRevision;searchController?.abort();searchController=new AbortController();
+ pendingMapboxSearch={query:q,revision:rev};showSearchStatus('Searching Mapbox…');
  try{const map=mapboxRenderer?.map,c=map?.getZoom()>=5?map.getCenter():tripDestination.center;const list=await mapboxSearch.suggest(q,[c.lng,c.lat],searchController.signal);if(rev!==searchRevision||mapProvider!=='mapbox')return;showResults(list);}
  catch(e){if(e.name!=='AbortError'&&rev===searchRevision)$('#results').textContent=e.message;}
+ finally{if(pendingMapboxSearch?.revision===rev)pendingMapboxSearch=null;}
 }
 async function connectGoogle(token,journeyCenter){
  await browserPermit();

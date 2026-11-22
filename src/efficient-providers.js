@@ -51,6 +51,13 @@ export class EfficientRouteProvider {
       this.pool.retain(key=>{const [p,m]=JSON.parse(key);return allowed.has(JSON.stringify([p,m]));});
     }
   }
+  retry(from,to,mode) {
+    const selectedPair=pair(from,to);
+    for(const key of this.pool.cache.keys()){
+      const [cachedPair,cachedMode]=JSON.parse(key);
+      if(cachedPair===selectedPair&&cachedMode===mode)this.pool.cache.delete(key);
+    }
+  }
   route(args) {
     let key;try{key=routeKey(args,this.config);}catch(error){return Promise.resolve({status:'error',message:error.message});}
     const [p,mode]=JSON.parse(key);

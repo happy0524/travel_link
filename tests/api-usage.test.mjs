@@ -101,3 +101,14 @@ test('browser grants fail closed and count slow use across process restarts',asy
     second.permitBrowser();
   }finally{second.close();}
 });
+
+test('a lowered cap is independent of the free allocation, with the cost guard still in force',async t=>{
+  const path=await directory(t);
+  const env={GOOGLE_TIME_ZONE_MONTHLY_LIMIT:'13',GOOGLE_TIME_ZONE_FREE_ALLOCATION:'1',
+    TRAVEL_LINK_OTHER_COST_RESERVE_KRW:'49880',TRAVEL_LINK_USD_KRW_ALL_IN:'2000'};
+  const guard=createApiUsage(path,{env});
+  try{
+    for(let i=0;i<13;i++)await guard.upstream('timezone',signal,async()=>{});
+    await assert.rejects(guard.upstream('timezone',signal,assert.fail),{code:'API_MONTH_LIMIT'});
+  }finally{guard.close();}
+});

@@ -49,7 +49,7 @@ export function createApiUsage(directory,{env=process.env,now=Date.now}={}){
   const paidRates={},freeUnits={},caps={};
   for(const [sku,[capKey,freeKey,standardFree,usdPerThousand]] of Object.entries(limits)){
     freeUnits[sku]=integer(env,freeKey,standardFree,standardFree);
-    caps[sku]=Math.min(integer(env,capKey,standardFree+10,standardFree+10),freeUnits[sku]+10);
+    caps[sku]=Math.min(integer(env,capKey,standardFree,1_000_000),standardFree);
     paidRates[sku]=usdPerThousand;
   }
   caps.browser=integer(env,'TRAVEL_LINK_BROWSER_MONTHLY_PERMITS',1000,10_000);
