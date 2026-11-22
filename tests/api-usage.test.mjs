@@ -71,3 +71,33 @@ test('caller-supplied forwarding prefixes cannot override the Render visitor IP'
   limiter.admit('one',()=>undefined);
   assert.throws(()=>limiter.admit('one',()=>undefined),{code:'API_RATE_LIMIT'});
 });
+
+test('paid Google SKUs compete for one modeled won budget while free usage continues',async t=>{
+  const path=await directory(t);
+  const env={TRAVEL_LINK_OTHER_COST_RESERVE_KRW:'49980',TRAVEL_LINK_USD_KRW_ALL_IN:'2000',
+    GOOGLE_ROUTES_PRO_FREE_ALLOCATION:'0',GOOGLE_TIME_ZONE_FREE_ALLOCATION:'1'};
+  const guard=createApiUsage(path,{env}),other=createApiUsage(path,{env});
+  try{
+    await guard.upstream('routesPro',signal,async()=>{});
+    await other.upstream('timezone',signal,async()=>{});
+    await assert.rejects(guard.upstream('timezone',signal,assert.fail),{code:'API_COST_LIMIT'});
+    await assert.rejects(other.upstream('routesPro',signal,assert.fail),{code:'API_COST_LIMIT'});
+    await guard.upstream('routesEssentials',signal,async()=>{});
+  }finally{guard.close();other.close();}
+});
+
+test('browser grants fail closed and count slow use across process restarts',async t=>{
+  const path=await directory(t);
+  const env={TRAVEL_LINK_BROWSER_MONTHLY_PERMITS:'2'};
+  let now=Date.parse('2027-03-01T08:00:00Z');
+  const first=createApiUsage(path,{env,now:()=>now});
+  try{first.permitBrowser();}finally{first.close();}
+  now=Date.parse('2027-03-28T08:00:00Z');
+  const second=createApiUsage(path,{env,now:()=>now});
+  try{
+    second.permitBrowser();
+    assert.throws(()=>second.permitBrowser(),{code:'API_MONTH_LIMIT'});
+    now=Date.parse('2027-04-01T07:00:00Z');
+    second.permitBrowser();
+  }finally{second.close();}
+});

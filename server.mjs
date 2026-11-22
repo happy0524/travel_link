@@ -73,6 +73,7 @@ const server=http.createServer(async(req,res)=>{
  if(url.pathname==='/api/usage/browser'&&req.method==='POST'){
   if(!allowsOrigin(req)){json(res,403,{message:'Request origin is not allowed.'});return;}
   admit(req);
+  usage.permitBrowser();
   json(res,200,{allowed:true,browserOptions:usage.browser});return;
  }
  if(url.pathname==='/api/debug/requests'&&requestMonitor){json(res,200,monitor.snapshot());return;}
