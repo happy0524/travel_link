@@ -24,7 +24,8 @@ export function resolveGoogleCandidates(place,places,{rematch=false}={}){
   }
   const name=normalize(place.name),street=streetAddress(place.address);
   const candidates=places.filter(p=>p.id&&p.location).map(p=>{
-    const distance=Math.hypot((p.location.lat()-place.lat)*111000,(p.location.lng()-place.lng)*111000*Math.cos(place.lat*Math.PI/180));
+    const lat=p.location.latitude??p.location.lat(),lng=p.location.longitude??p.location.lng();
+    const distance=Math.hypot((lat-place.lat)*111000,(lng-place.lng)*111000*Math.cos(place.lat*Math.PI/180));
     const candidateName=normalize(p.displayName),type=p.primaryType||p.types?.[0];
     const candidateStreet=streetAddress(p.formattedAddress);
     const addressMatches=Boolean(street&&street===candidateStreet);
@@ -48,10 +49,10 @@ export function rememberGooglePlaceId(place,id){
   if(place.source==='example')try{localStorage.setItem(sampleLinkKey(place),id);}catch{}
 }
 
-export async function findGoogleCandidates(place,key,signal,{rematch=false}={}){
+export async function findGoogleCandidates(place,key,signal,{rematch=false,search}={}){
   if(!key)throw new Error(ui.googleKeyMissing);
   await loadGoogleMaps(key);
-  const {Place}=await google.maps.importLibrary('places');
+  await google.maps.importLibrary('places');
   signal.throwIfAborted();
   if(!customElements.get('gmp-place-details'))throw new Error('Could not load Google Places UI Kit. Check that it is enabled.');
   if(!rematch){
@@ -59,19 +60,15 @@ export async function findGoogleCandidates(place,key,signal,{rematch=false}={}){
     if(linkedId)return {id:linkedId};
     if(place.source==='live')return {id:place.id};
   }
-  const textQuery=[place.name,place.address||'New York'].join(', ');
-  const {places}=await Place.searchByText({textQuery,fields:['id','displayName','formattedAddress','location','primaryType','types'],
-    maxResultCount:5,language,locationBias:{lat:place.lat,lng:place.lng}});
-  signal.throwIfAborted();
-  return resolveGoogleCandidates(place,places,{rematch});
+  return search(place,{rematch,signal});
 }
 
-export function createGoogleWidget(placeId,{Place,compact=false,onLoad,onError}){
+export function createGoogleWidget(placeId,{Place,compact=false,media=true,onLoad,onError}){
   const widget=document.createElement(compact?'gmp-place-details-compact':'gmp-place-details');
   const request=document.createElement('gmp-place-details-place-request');
   request.place=new Place({id:placeId,requestedLanguage:language});
   widget.append(request);
-  const tags=compact?['name','address','type']:['name','address','media','rating','type','summary','opening-hours','website','attribution'];
+  const tags=compact?['name','address','type']:['name','address',...(media?['media','summary']:[]),'rating','type','opening-hours','website','attribution'];
   for(const tag of tags)widget.append(document.createElement('gmp-place-'+tag));
   if(onLoad)widget.addEventListener('gmp-load',onLoad,{once:true});
   if(onError)widget.addEventListener('gmp-error',onError,{once:true});

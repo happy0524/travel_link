@@ -21,6 +21,16 @@ const setup=(config={})=>{
 test('four visits request exactly three adjacent segments; identical recalculation adds zero',async()=>{
  const s=setup(),v=visits();await s.calc(v);assert.equal(s.calls.length,3);await s.calc(v);assert.equal(s.calls.length,3);
 });
+test('retrying one route preserves cached siblings with the same departure',async()=>{
+ const s=setup(),v=visits(),segments=reconcile(v);
+ for(const segment of Object.values(segments))segment.mode='WALK';
+ await s.calc(v,{segments});
+ s.provider.retry(v[1].place,v[2].place,'WALK');
+ await s.calc(v,{segments});
+ assert.equal(s.calls.length,4);
+ assert.equal(s.calls.at(-1).from.id,v[1].place.id);
+ assert.equal(s.calls.at(-1).to.id,v[2].place.id);
+});
 test('adding a destination preserves unchanged active segments',async()=>{
  const s=setup(),v=visits();for(let i=1;i<=4;i++)await s.calc(v.slice(0,i));assert.equal(s.calls.length,3);
 });
@@ -96,26 +106,25 @@ test('edit debounce commits only the final edit',async()=>{
 });
 
 function placeSetup(){
- let now=0;const calls={search:0,detail:0,zone:0,fields:[]};
- class Place{
-   constructor({id='p'}={}){Object.assign(this,{id,displayName:'Place',formattedAddress:'Address',location:{lat:()=>37.5,lng:()=>127}});}
-   static async searchByText(args){calls.search++;calls.fields.push(args.fields);return {places:[new Place()]};}
-   async fetchFields(args){calls.detail++;calls.fields.push(args.fields);return {place:this};}
- }
- const p=new PlacesProvider({library:async()=>({Place}),now:()=>now,config:{...requestConfig,timeZoneCacheTtlMs:10},
-   fetcher:async()=>{calls.zone++;return {ok:true,json:async()=>({zone:'Asia/Seoul'})};}});
+ let now=0;const calls={search:0,detail:0,zone:0,queries:[]};
+ const place={id:'p',displayName:{text:'Place'},formattedAddress:'Address',location:{latitude:37.5,longitude:127}};
+ const p=new PlacesProvider({now:()=>now,config:{...requestConfig,timeZoneCacheTtlMs:10},
+   fetcher:async(url,options)=>{
+    if(url.endsWith('/search')){calls.search++;calls.queries.push(JSON.parse(options.body));return {ok:true,json:async()=>({places:[place]})};}
+    if(url.includes('/places/')){calls.detail++;return {ok:true,json:async()=>({place})};}
+    calls.zone++;return {ok:true,json:async()=>({zone:'Asia/Seoul'})};
+   }});
  return {p,calls,tick:n=>now+=n};
 }
-test('search skips empty/short input, normalizes whitespace, deduplicates and requests only list fields',async()=>{
+test('search skips empty/short input, normalizes whitespace, and shares requests in flight',async()=>{
  const {p,calls}=placeSetup();assert.deepEqual(await p.search(' '),[]);await p.search('a');
  await Promise.all([p.search('  Seoul  cafe '),p.search('Seoul cafe')]);assert.equal(calls.search,1);
- await p.search('Seoul cafe');assert.equal(calls.search,1);assert.equal(calls.zone,0);assert.equal(calls.detail,0);
- assert.ok(!calls.fields[0].includes('photos'));assert.ok(!calls.fields[0].includes('regularOpeningHours'));
+ await p.search('Seoul cafe');assert.equal(calls.search,2);assert.equal(calls.zone,0);assert.equal(calls.detail,0);
+ assert.deepEqual(calls.queries[0],{query:'Seoul cafe'});
 });
-test('a place search cache does not reuse results biased toward a different destination',async()=>{
+test('different destination biases do not share a place search',async()=>{
  const {p,calls}=placeSetup(),ny={lat:40.71,lng:-74},seoul={lat:37.56,lng:126.98};
- await p.search('Times Square',{locationBias:ny});
- await p.search('Times Square',{locationBias:{...ny}});
+ await Promise.all([p.search('Times Square',{locationBias:ny}),p.search('Times Square',{locationBias:{...ny}})]);
  await p.search('Times Square',{locationBias:seoul});
  assert.equal(calls.search,2);
 });
@@ -127,11 +136,11 @@ test('zone comparisons normalize aliases and reject numeric offsets',()=>{
 test('repeated inspection shares details and timezone; confirmed IANA zone reused',async()=>{
  const {p,calls}=placeSetup(),[place]=await p.search('Seoul');p.retain([place]);
  const results=await Promise.all([p.inspect(place),p.inspect(place)]);await p.inspect(place);
- assert.equal(calls.detail,1);assert.equal(calls.zone,1);assert.equal(results[0].zone,'Asia/Seoul');
+ assert.equal(calls.detail,2);assert.equal(calls.zone,1);assert.equal(results[0].zone,'Asia/Seoul');
 });
 test('timezone TTL expires on next inspection, failures/unknown IANA are never cached',async()=>{
  const {p,calls,tick}=placeSetup(),[place]=await p.search('Seoul');p.retain([place]);await p.inspect(place);tick(11);await p.inspect(place);
- assert.equal(calls.zone,2);p.zones.clear();p.fetcher=async()=>({ok:true,json:async()=>({zone:'Unknown/Zone'})});
+ assert.equal(calls.zone,2);p.zones.clear();const fetcher=p.fetcher;p.fetcher=(url,options)=>url.includes('/timezone')?{ok:true,json:async()=>({zone:'Unknown/Zone'})}:fetcher(url,options);
  await assert.rejects(p.inspect(place));assert.equal(p.zones.cache.size,0);
 });
 test('coordinate key absorbs numerical noise without grouping neighbouring boundary venues',()=>{

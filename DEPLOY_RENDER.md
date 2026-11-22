@@ -1,5 +1,7 @@
 # Render 배포
 
+공개 시연 전 [지도 API 사용 한도](API_USAGE_LIMITS.md)의 제공자 설정과 예산 기준을 확인하세요.
+
 ## 공개 링크 만들기
 
 1. Render Dashboard에서 **New → Web Service**를 선택하고 GitHub의 `happy0524/travel_link` 저장소를 연결합니다. 브랜치는 `travel_link-v1.0`, 런타임은 **Node**, 인스턴스는 영구 디스크를 지원하는 유료 인스턴스 하나를 선택합니다.
@@ -12,6 +14,7 @@
 | `TRAVEL_LINK_DATA_DIR` | `/var/data` |
 | `GOOGLE_MAPS_BROWSER_KEY` | Maps JavaScript API, Places API (New), Places UI Kit에 사용하는 웹 키 |
 | `GOOGLE_MAPS_SERVER_KEY` | Routes API와 Time Zone API에 사용하는 서버 키 |
+| `GOOGLE_PLACES_SERVER_KEY` | Places API (New) 서버 키. 생략하려면 기존 서버 키에 Places API (New)를 함께 허용해야 함 |
 | `MAPBOX_PUBLIC_TOKEN` | 지도·검색·경로에 사용하는 공개 웹 토큰 |
 | `GOOGLE_MAPS_MAP_ID` | 기존 Cloud Map ID를 쓸 때만 설정 |
 | `TRAVEL_LINK_PUBLIC_URL` | 기본 `onrender.com` 주소에서는 생략. 커스텀 도메인을 실제 접속 주소로 쓸 때만 HTTPS 주소 설정 |

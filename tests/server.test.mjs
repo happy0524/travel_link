@@ -7,8 +7,10 @@ import {join} from 'node:path';
 import {tmpdir} from 'node:os';
 
 test('server boundary uses mocked Google only',async t=>{
+ const usageDir=await mkdtemp(join(tmpdir(),'travel-link-server-'));
  const server=spawn(process.execPath,['--import','./tests/server-fixture.mjs','server.mjs'],{
-   env:{...process.env,PORT:'0',GOOGLE_MAPS_SERVER_KEY:'fixture-server-key',GOOGLE_MAPS_BROWSER_KEY:'fixture-browser-key',REQUEST_MONITOR:'1',NODE_ENV:'development'},
+   env:{...process.env,PORT:'0',TRAVEL_LINK_DATA_DIR:usageDir,
+     GOOGLE_MAPS_SERVER_KEY:'fixture-server-key',GOOGLE_MAPS_BROWSER_KEY:'fixture-browser-key',REQUEST_MONITOR:'1',NODE_ENV:'development'},
    stdio:['ignore','pipe','inherit'],windowsHide:true});
  try{
  const base=await new Promise((resolve,reject)=>{
@@ -56,7 +58,12 @@ test('server boundary uses mocked Google only',async t=>{
  });
  await t.test('monitor and static routes expose no keys, credentials or server source',async()=>{
    const data=JSON.stringify(await monitor());assert.ok(!data.includes('fixture-server-key'));assert.ok(!data.includes('fixture-browser-key'));
-   for(const p of ['/.env','/server.mjs','/tests/server-fixture.mjs'])assert.equal((await fetch(base+p)).status,404);
+   for(const p of ['/.env','/server.mjs','/api-usage.mjs','/api-usage.sqlite','/profile.key','/.travel-link/travel.sqlite','/backups/render-v1/travel.sqlite','/tests/server-fixture.mjs'])assert.equal((await fetch(base+p)).status,404);
+ });
+ await t.test('anonymous browser permits are checked before optional login',async()=>{
+   assert.equal((await fetch(base+'/api/usage/browser',{method:'POST'})).status,403);
+   const response=await fetch(base+'/api/usage/browser',{method:'POST',headers:{Origin:base}});
+   assert.equal(response.status,200);assert.equal((await response.json()).allowed,true);
  });
  }finally{server.kill();}
 });

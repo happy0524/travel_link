@@ -2,10 +2,11 @@ import {validMapboxPlace,allowedRouteFeatures} from './mapbox-eucalyptus.js';
 import {ui} from './ui-copy.js';
 
 export class MapboxDirections {
- constructor(getToken,{fetcher=(url,options)=>fetch(url,options)}={}){this.getToken=getToken;this.fetcher=fetcher;}
+ constructor(getToken,{fetcher=(url,options)=>fetch(url,options),permit=async()=>{}}={}){Object.assign(this,{getToken,fetcher,permit});}
  async route({from,to,mode,signal}){
   if(!validMapboxPlace(from)||!validMapboxPlace(to))return {status:'unsupported',message:'Use Google Maps for routes involving places from Google.'};
   if(!['WALK','DRIVE'].includes(mode))return {status:'unsupported',message:'Mapbox supports walking and driving routes in this planner.'};
+  try{await this.permit(signal);}catch(error){if(signal?.aborted)throw error;return {status:'error',message:error.message};}
   const token=this.getToken();if(!token)return {status:'error',message:ui.mapboxTokenMissing};
   const profile=mode==='WALK'?'walking':'driving';
   const query=new URLSearchParams({access_token:token,geometries:'geojson',overview:'full',steps:'false'});

@@ -101,9 +101,9 @@ export function setupOnboarding({searchDestination,timeZone,restoreDestination,l
             selection={...place,zone};userDestination=searched;
             field('destination').value=place.name;
             updateZone();destinationResults('Destination confirmed.');
-          }catch{
+          }catch(error){
             if(signal.aborted)return;
-            destinationResults('The local time zone could not be confirmed.');
+            destinationResults(error.code?.startsWith('API_')?error.message:'The local time zone could not be confirmed.');
             const retry=document.createElement('button');retry.type='button';retry.textContent='Try again';
             retry.onclick=confirm;results.append(retry);
           }
@@ -111,7 +111,7 @@ export function setupOnboarding({searchDestination,timeZone,restoreDestination,l
         button.onclick=confirm;
         results.append(button);
       }
-    }catch(error){if(!signal.aborted)destinationResults('Could not search for destinations. Try again.');}
+    }catch(error){if(!signal.aborted)destinationResults(error.code?.startsWith('API_')?error.message:'Could not search for destinations. Try again.');}
   };
 
   function showLibrary(show){

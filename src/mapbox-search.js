@@ -1,13 +1,15 @@
 import {language,ui} from './ui-copy.js';
 
 export class MapboxSearch {
- constructor(getToken,{fetcher=(...args)=>fetch(...args),now=Date.now}={}){Object.assign(this,{getToken,fetcher,now});this.reset();}
+ constructor(getToken,{fetcher=(...args)=>fetch(...args),permit=async()=>{},now=Date.now}={}){Object.assign(this,{getToken,fetcher,permit,now});this.reset();}
  reset(){this.session=crypto.randomUUID();this.started=this.now();this.calls=0;}
  async request(path,params,signal){
+  await this.permit(signal);
   const token=this.getToken();if(!token)throw Error(ui.mapboxTokenMissing);
   const q=new URLSearchParams({...params,access_token:token});
   const requestFailed='Place search failed. Try again.';
-  const r=await this.fetcher('https://api.mapbox.com/search/searchbox/v1/'+path+'?'+q,{signal})
+  const timeout=AbortSignal.timeout(12000);
+  const r=await this.fetcher('https://api.mapbox.com/search/searchbox/v1/'+path+'?'+q,{signal:signal?AbortSignal.any([signal,timeout]):timeout})
    .catch(error=>{if(error.name==='AbortError')throw error;throw Error(requestFailed);});
   if(!r.ok)throw Error(r.status===429?'Search rate limit reached. Try again later.':[401,403].includes(r.status)?'Search authentication failed. Check the token and allowed URLs.':requestFailed);
   return r.json().catch(()=>{throw Error(requestFailed);});

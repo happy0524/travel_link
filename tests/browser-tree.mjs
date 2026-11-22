@@ -29,10 +29,12 @@ try{
  });
  await p.route('**/directions/v5/**',route=>{const coords=new URL(route.request().url()).pathname.split('/').at(-1).split(';').map(v=>v.split(',').map(Number));return route.fulfill({json:{code:'Ok',routes:[{duration:120,distance:450,geometry:{type:'LineString',coordinates:coords}}]}});});
  let failure=0;
- await p.route('**/search/searchbox/v1/**',route=>{
+ await p.route('**/search/searchbox/v1/**',async route=>{
   const u=new URL(route.request().url());searchCalls.push({path:u.pathname,session:u.searchParams.get('session_token'),language:u.searchParams.get('language')});
   if(failure)return route.fulfill({status:failure,json:{message:'fixture failure'}});
-  const q=u.searchParams.get('q');return route.fulfill({json:q!==null?{suggestions:q==='empty'?[]:[{mapbox_id:q,name:q,feature_type:'poi',full_address:'New York'}]}:{features:[{geometry:{type:'Point',coordinates:[-73.981,40.765]},properties:{mapbox_id:decodeURIComponent(u.pathname.split('/').at(-1)),name:decodeURIComponent(u.pathname.split('/').at(-1)),full_address:'New York',poi_category:['park']}}]}});
+  const q=u.searchParams.get('q');
+  if(q==='Times Square')await new Promise(resolve=>setTimeout(resolve,250));
+  return route.fulfill({json:q!==null?{suggestions:q==='empty'?[]:[{mapbox_id:q,name:q,feature_type:'poi',full_address:'New York'}]}:{features:[{geometry:{type:'Point',coordinates:[-73.981,40.765]},properties:{mapbox_id:decodeURIComponent(u.pathname.split('/').at(-1)),name:decodeURIComponent(u.pathname.split('/').at(-1)),full_address:'New York',poi_category:['park']}}]}});
  });
  await p.goto(base);await p.waitForFunction(()=>document.querySelectorAll('.mapbox-visit').length===4);
  const assertTimeline=async()=>assert.ok(await p.locator('#visits').evaluate(node=>{
@@ -76,9 +78,10 @@ try{
  assert.equal(await p.locator('.google-candidate').count(),0);assert.equal(await p.locator('#details > .details-body').count(),0);
  assert.doesNotMatch(await p.locator('#details').innerText(),/sample itinerary|Opening hours unavailable|Select this Google place/);
  assert.ok(await p.locator('#itinerary-content').isVisible());assert.equal(await p.locator('gmp-place-details gmp-place-attribution').count(),1);
+ const candidateRequest=p.waitForRequest(request=>request.url().endsWith('/api/places/candidates'));
  await p.getByRole('button',{name:'Change linked place'}).click();
  const candidate=p.locator('.google-candidate').filter({hasText:'fixture-terminal'});await candidate.locator('button').click();
- assert.equal(await p.evaluate(()=>window.__googleStats.searchLanguage),'en');
+ assert.equal((await candidateRequest).postDataJSON().rematch,true);
  await p.locator('.google-details #add').waitFor();
  assert.match(await p.locator('gmp-place-details').innerText(),/fixture-terminal/);
  assert.equal(await p.evaluate(()=>localStorage.getItem('travel-link.google-place:grand-central')),'fixture-terminal');
@@ -141,10 +144,13 @@ try{
  await p.evaluate(()=>window.__denyGoogleWidget=true);await p.locator('.visit-details').first().click();
  await p.locator('#details').getByRole('button',{name:'Try again'}).waitFor();await p.locator('#close-details').click();
  for(const name of ['Times Square','Central Park']){
-  await p.locator('#search').fill(name);await p.locator('#results [data-result]').first().click();await p.locator('#details #add').waitFor({state:'visible'});
+  await p.locator('#search').fill(name);
+  if(name==='Times Square')await p.locator('#search-form').evaluate(form=>{form.requestSubmit();form.requestSubmit();});
+  await p.locator('#results [data-result]').first().click();await p.locator('#details #add').waitFor({state:'visible'});
   assert.equal(await p.locator('#details h2').innerText(),name);await p.locator('#add').click();await p.locator('#close-details').click();
  }
- assert.equal(await p.locator('.visit').count(),6);assert.equal(searchCalls[0].session,searchCalls[1].session);assert.notEqual(searchCalls[0].session,searchCalls[2].session);
+ assert.equal(await p.locator('.visit').count(),6);assert.equal(searchCalls.length,4);
+ assert.equal(searchCalls[0].session,searchCalls[1].session);assert.notEqual(searchCalls[0].session,searchCalls[2].session);
  assert.ok(searchCalls.every(call=>call.language==='en'));
  await assertTimeline();
  await p.locator('#search').fill('Central Park');await p.locator('#results [data-result]').first().click();
@@ -177,5 +183,10 @@ try{
  assert.equal(await unavailable.locator('.visit').count(),4);
  assert.equal(configCalls,1);
  await unavailable.close();
+ await p.route('**/api/service-status',route=>route.fulfill({status:503,json:{code:'API_SITE_STOPPED',message:'Travel Link is temporarily paused.'}}));
+ await p.evaluate(()=>document.dispatchEvent(new Event('visibilitychange')));
+ await p.locator('#service-stop').waitFor({state:'visible'});
+ assert.ok(!await p.locator('#search').isVisible());
+ assert.equal(await p.locator('#mapbox-map .mapbox-visit').count(),0);
  assert.deepEqual(errors,[]);console.log('PASS real-provider migration, calendar keyboard/leap day, minute precision, provider transit guard and recalculation, Mapbox search, UI Kit and responsive panels');
 }finally{await b.close();}

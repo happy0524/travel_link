@@ -19,7 +19,8 @@ import {formatDuration,locale,ui} from './ui-copy.js';
 import {mapPalette} from './map-palette.js';
 import {dateInZone,setupOnboarding} from './onboarding.js';
 import {referenceForPlace,restorePlaceId,stopReference} from './trip-stops.js';
-const mapboxSearch=new MapboxSearch(()=>config.mapboxToken);
+const mapboxPermit=signal=>browserPermit(signal,'mapbox');
+const mapboxSearch=new MapboxSearch(()=>config.mapboxToken,{permit:mapboxPermit});
 const delayedMapboxSearch=debounce(searchMapbox,350);
 const $=s=>document.querySelector(s);
 const esc=s=>String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
@@ -31,14 +32,15 @@ let googleDetailsController;
 let mapProvider='mapbox',mapboxRenderer=null,mapSwitch=0,pendingProvider=null;
 let tripDestination=destination;
 const monitor=createMonitor(requestConfig.instrumentation);
-const placesProvider=new PlacesProvider({monitor});
+const placesProvider=new PlacesProvider({monitor,onFailure:serviceDenied});
 const liveProvider=new EfficientRouteProvider(new LiveProvider(),{monitor});
-const mapboxDirections=new EfficientRouteProvider(new MapboxDirections(()=>config.mapboxToken),{monitor});
-let placeRevision=0,placeController,searchController;
+const mapboxDirections=new EfficientRouteProvider(new MapboxDirections(()=>config.mapboxToken,{permit:mapboxPermit}),{monitor});
+let placeRevision=0,placeController,searchController,pendingMapboxSearch,pendingGoogleSearch;
 const delayedCalculation=debounce(runCalculation,requestConfig.editDebounceMs);
 const delayedSearch=debounce(()=>searchPlaces('search-submit'),requestConfig.searchDebounceMs);
 const googleRoutes={
  setActive:(...args)=>liveProvider.setActive(...args),
+ retry:(...args)=>liveProvider.retry(...args),
  route:args=>{
   const points=[args.from,args.to];
   if(points.some(p=>!hasLocation(p)))return Promise.resolve({status:'unsupported',message:'Restore or relink the stop before calculating this route.'});
@@ -61,6 +63,7 @@ function add(place){
  const mismatch=placeZoneMismatch(place);
  if(mismatch){toast(mismatch);return;}
  const missing=visits.find(v=>v.id===relinkStop&&v.restoreStatus==='relink');
+ if(!missing&&visits.length>=100){toast('This trip can hold up to 100 stops.');return;}
  const v=missing||{id:crypto.randomUUID(),stay:defaults.stay,wait:false};
  v.place=place;
  v.reference=referenceForPlace(place);v.restoreStatus=null;relinkStop=null;
@@ -106,6 +109,7 @@ function reorder(id,targetIndex){
  refresh('reorder');
 }
 function refresh(reason='edit'){
+ if(serviceStopped)return;
  delayedCalculation.cancel();
  controller?.abort();controller=new AbortController();const rev=++revision;
  const comparisonRevision=comparison.begin(reason);clearTimeout(comparisonTimer);
@@ -228,7 +232,7 @@ async function selectPlace(p){
  try{
   detail=box?(p.suggestion?await mapboxSearch.retrieve(p,signal):p):await placesProvider.describe(p,{signal});
  }catch(e){
-  if(!signal.aborted&&token===placeRevision)showPlaceStatus(box?e.message:'Could not load the place details.',()=>selectPlace(p));
+  if(!signal.aborted&&token===placeRevision)showPlaceStatus(box||e.code?.startsWith('API_')?e.message:'Could not load the place details.',()=>selectPlace(p));
   return;
  }
  if(token!==placeRevision)return;
@@ -243,8 +247,8 @@ async function checkPlaceZone(detail,token,signal){
   selectedPlace={...detail,zone:confirmed};
   if(mapProvider==='mapbox')focusPlace(selectedPlace);
   renderMap();renderDetails();retainPlaces();
- }catch{
-  if(!signal.aborted&&token===placeRevision)showPlaceStatus('Couldn’t verify this place’s time zone. Try again.',()=>checkPlaceZone(detail,token,signal));
+ }catch(error){
+  if(!signal.aborted&&token===placeRevision)showPlaceStatus(error.code?.startsWith('API_')?error.message:'Couldn’t verify this place’s time zone. Try again.',()=>checkPlaceZone(detail,token,signal));
  }
 }
 function showPlacePane(mode){
@@ -282,7 +286,8 @@ function renderDetails(){
  const periods=dateHours??p.hours?.[day];
  const hrs=periods?.map(([a,b])=>a===0&&b===1440?'Open 24 hours':clock(a)+' – '+clock(b)).join('<br>')||'Closed';
  const hours=periods?`<div class="hours"><strong>${esc($('#date').value)} · ${esc(p.zone||zone())}</strong><br>${hrs}<p>${dateHours?'Hours for this date':'Regular hours · holiday and special hours are unconfirmed'}</p></div>`:'';
- panel.innerHTML=(p.photo?'<img class="place-photo" src="'+esc(p.photo)+'" alt="'+esc(p.name)+' photo">':'')+'<div class="details-body"><span class="eyebrow">'+esc(p.category)+'</span><h2>'+esc(p.name)+'</h2>'+(p.address?'<p class="address">⌖ '+esc(p.address)+'</p>':'')+(p.attributions?.length?'<p>'+p.attributions.map(a=>'<a rel="noopener noreferrer" target="_blank" href="'+esc(a.providerURI||'https://maps.google.com')+'">'+esc(a.provider||'Google Maps')+'</a>').join(', ')+'</p>':'')+(p.authors?'<p>'+p.authors.map(a=>'<a rel="noopener noreferrer" target="_blank" href="'+esc(a.uri||'https://maps.google.com')+'">'+esc(a.displayName)+'</a>').join(', ')+'</p>':'')+hours+'</div>';
+ const photo=p.photo?'<img class="place-photo" src="'+esc(p.photo)+'" alt="'+esc(p.name)+' photo">':'';
+ panel.innerHTML=(photo&&p.photoSource?'<a target="_blank" rel="noopener noreferrer" href="'+esc(p.photoSource)+'">'+photo+'</a>':photo)+'<div class="details-body"><span class="eyebrow">'+esc(p.category)+'</span><h2>'+esc(p.name)+'</h2>'+(p.address?'<p class="address">⌖ '+esc(p.address)+'</p>':'')+(p.attributions?.length?'<p>'+p.attributions.map(a=>'<a rel="noopener noreferrer" target="_blank" href="'+esc(a.providerURI||'https://maps.google.com')+'">'+esc(a.provider||'Google Maps')+'</a>').join(', ')+'</p>':'')+(p.authors?'<p>'+p.authors.map(a=>'<a rel="noopener noreferrer" target="_blank" href="'+esc(a.uri||'https://maps.google.com')+'">'+esc(a.displayName)+'</a>').join(', ')+'</p>':'')+hours+'</div>';
  const actions=appendPlaceActions(panel,p);
  if(mapProvider==='mapbox'){
   const googleButton=document.createElement('button');googleButton.type='button';googleButton.className='place-link-action';
@@ -296,7 +301,8 @@ function appendPlaceActions(container,place){
  const note=document.createElement('p');note.className='place-zone-note';note.role='status';note.hidden=true;
  actions.append(note,button);container.append(actions);updateAddAction();return actions;
 }
-async function openGoogleDetails(place,{rematch=false,moveMap=true}={}){
+async function openGoogleDetails(place,{rematch=false,moveMap=true,retry=false}={}){
+ if(!rematch&&!retry&&selectedPlace===place&&googleDetailsController&&!googleDetailsController.signal.aborted)return;
  placeRevision++;placeController?.abort();googleDetailsController?.abort();selectedPlace=place;
  showPlacePane('details');const panel=$('#details');panel.scrollTop=0;
  if(moveMap&&mapProvider==='mapbox')focusPlace(place);
@@ -308,15 +314,18 @@ async function openGoogleDetails(place,{rematch=false,moveMap=true}={}){
   host.replaceChildren();const p=document.createElement('p');p.role='status';p.textContent=message;host.append(p);
   if(retry){const button=document.createElement('button');button.type='button';button.textContent=ui.retry;button.onclick=retry;host.append(button);}
  };
- const retryMatch=()=>openGoogleDetails(place,{rematch,moveMap:false});
+ const retryMatch=()=>openGoogleDetails(place,{rematch,moveMap:false,retry:true});
  let Place;
- function showWidget(id){
+ async function showWidget(id){
   status('Loading Google Maps place details…');
   panel.scrollTop=0;
   const retry=()=>showWidget(id);
+  let options;
+  try{options=await browserPermit(signal,'googleWidgets');}
+  catch(error){if(!signal.aborted)status(error.message,retry);return;}
   const timeout=setTimeout(()=>{if(!signal.aborted)status('Google Places UI Kit timed out.',retry);},15000);
   signal.addEventListener('abort',()=>clearTimeout(timeout),{once:true});
-  const widget=createGoogleWidget(id,{Place,onLoad:()=>{
+  const widget=createGoogleWidget(id,{Place,media:options.googleMedia!==false,onLoad:()=>{
    clearTimeout(timeout);
    if(signal.aborted||!widget.isConnected)return;
    const visit=findDestination(visits,place);
@@ -341,7 +350,8 @@ async function openGoogleDetails(place,{rematch=false,moveMap=true}={}){
  }
  status('Finding the matching place in Google Maps…');
  try{
-  const match=await findGoogleCandidates(place,config.browserKey,signal,{rematch});
+  if(config.browserOptions?.googleWidgets===false)throw Error('Google place widgets are disabled.');
+  const match=await findGoogleCandidates(place,config.browserKey,signal,{rematch,search:(p,options)=>placesProvider.candidates(p,options)});
   if(signal.aborted)return;
   ({Place}=await google.maps.importLibrary('places'));
   if(signal.aborted)return;
@@ -349,9 +359,12 @@ async function openGoogleDetails(place,{rematch=false,moveMap=true}={}){
   if(!match.candidates.length){status('No matching Google place was found near these coordinates.',retryMatch);return;}
   status('Check the address and category, then select the matching Google place.');
   let remaining=match.candidates.length;
+  let candidateChosen=false;
   const candidateTimeout=setTimeout(()=>{if(!signal.aborted&&host.querySelector('.google-candidate')&&!host.querySelector('.google-candidate button:enabled'))status('Google place candidates took too long to load.',retryMatch);},15000);
   signal.addEventListener('abort',()=>clearTimeout(candidateTimeout),{once:true});
   for(const candidate of match.candidates){
+   await browserPermit(signal,'googleWidgets');
+   if(candidateChosen)return;
    const entry=document.createElement('div');entry.className='google-candidate';
    const confirm=document.createElement('button');confirm.textContent='Select this Google place';confirm.disabled=true;
    const widget=createGoogleWidget(candidate.id,{Place,compact:true,onLoad:()=>{confirm.disabled=false;},onError:()=>{
@@ -359,9 +372,12 @@ async function openGoogleDetails(place,{rematch=false,moveMap=true}={}){
     entry.remove();remaining--;
     if(!remaining){clearTimeout(candidateTimeout);status('Google rejected the place preview request. Check that Places UI Kit is enabled and review the key restrictions.',retryMatch);}
    }});
-   confirm.onclick=()=>{clearTimeout(candidateTimeout);showWidget(candidate.id);};entry.append(widget,confirm);host.append(entry);
+   confirm.onclick=()=>{
+    if(candidateChosen)return;
+    candidateChosen=true;clearTimeout(candidateTimeout);showWidget(candidate.id);
+   };entry.append(widget,confirm);host.append(entry);
   }
- }catch(error){if(!signal.aborted)status(error.message.startsWith('Google')?error.message:'Google place search failed. Check Places API (New), key restrictions, and the network.',retryMatch);}
+ }catch(error){if(!signal.aborted)status(error.code?.startsWith('API_')||error.message.startsWith('Google')?error.message:'Google place search failed. Check Places API (New), key restrictions, and the network.',retryMatch);}
 }
 function transitClock(instant){
  if(!instant||!Number.isFinite(Date.parse(instant)))return '';
@@ -404,7 +420,9 @@ function renderEdge(){
  panel.innerHTML='<div class="edge-settings-content"><button class="close" id="close-edge" aria-label="Close travel mode">×</button><h3>'+(i+1)+' → '+(i+2)+' travel mode</h3><div class="mode-buttons">'+controls+'</div>'+info+'</div>';
  panel.firstElementChild.scrollTop=previous;
  $('#close-edge').onclick=()=>{edge=null;renderEdge();renderMap();};
- $('#retry-route')?.addEventListener('click',()=>{provider().pool?.clear();if(!box)liveProvider.pool.clear();refresh('retry');});
+ $('#retry-route')?.addEventListener('click',()=>{
+  provider().retry(visits[i].place,visits[i+1].place,mode);refresh('retry');
+ });
  panel.querySelectorAll('[data-mode]').forEach(button=>button.onclick=()=>{
   const next=button.dataset.mode;
   if(mode===next)return;
@@ -518,8 +536,8 @@ $('#visits').ondragover=e=>{const c=e.target.closest('[data-visit]');if(c){e.pre
 $('#visits').ondragleave=e=>e.target.closest('[data-visit]')?.classList.remove('drag-over');
 $('#visits').ondrop=e=>{e.preventDefault();const card=e.target.closest('[data-visit]');if(card)reorder(dragId||e.dataTransfer.getData('text/plain'),visits.findIndex(v=>v.id===card.dataset.visit));dragId=null;};
 $('#visits').ondragend=()=>{dragId=null;document.querySelectorAll('.dragging,.drag-over').forEach(e=>e.classList.remove('dragging','drag-over'));};
-$('#date').onchange=()=>{schedule.date=$('#date').value;refresh('date');if(selectedPlace&&!googleDetailsController)renderDetails();};
-$('#time').onchange=()=>{schedule.time=$('#time').value;refresh('time');};
+$('#date').onchange=()=>{if(schedule.date===$('#date').value)return;schedule.date=$('#date').value;refresh('date');if(selectedPlace&&!googleDetailsController)renderDetails();};
+$('#time').onchange=()=>{if(schedule.time===$('#time').value)return;schedule.time=$('#time').value;refresh('time');};
 $('#date').oninput=$('#date').onchange;$('#time').oninput=$('#time').onchange;
 function showResults(list){
  showPlacePane('results');
@@ -545,22 +563,31 @@ $('#search-form').onsubmit=e=>{
  delayedSearch();
 };
 async function searchPlaces(reason){
+ const query=$('#search').value.trim().replace(/\s+/g,' ');
+ if(pendingGoogleSearch?.query===query&&pendingGoogleSearch.revision===searchRevision)return;
  const rev=++searchRevision;searchController?.abort();searchController=new AbortController();
+ pendingGoogleSearch={query,revision:rev};
  showSearchStatus('Searching Google Places…');
  try{
-   const list=await placesProvider.search($('#search').value,{signal:searchController.signal,reason,
+   const list=await placesProvider.search(query,{signal:searchController.signal,reason,
     locationBias:tripDestination.center});
    if(rev!==searchRevision){monitor.record({api:'places-search',reason,id:'current-query',status:'stale-discarded'});return;}
    livePlaces=list;retainPlaces();showResults(livePlaces);renderMap();
- }catch(e){if(e.name!=='AbortError'&&rev===searchRevision)$('#results').textContent='Place search failed. Check API settings and regional availability.';}
+ }catch(e){if(e.name!=='AbortError'&&rev===searchRevision)$('#results').textContent=e.code?.startsWith('API_')?e.message:'Place search failed. Check API settings and regional availability.';}
+ finally{if(pendingGoogleSearch?.revision===rev)pendingGoogleSearch=null;}
 }
 async function searchMapbox(){
  const q=$('#search').value.trim();if(q.length<2){showSearchStatus(ui.minQuery);return;}
-   const rev=++searchRevision;searchController?.abort();searchController=new AbortController();showSearchStatus('Searching Mapbox…');
+ if(pendingMapboxSearch?.query===q&&pendingMapboxSearch.revision===searchRevision)return;
+ const rev=++searchRevision;searchController?.abort();searchController=new AbortController();
+ pendingMapboxSearch={query:q,revision:rev};showSearchStatus('Searching Mapbox…');
  try{const map=mapboxRenderer?.map,c=map?.getZoom()>=5?map.getCenter():tripDestination.center;const list=await mapboxSearch.suggest(q,[c.lng,c.lat],searchController.signal);if(rev!==searchRevision||mapProvider!=='mapbox')return;showResults(list);}
  catch(e){if(e.name!=='AbortError'&&rev===searchRevision)$('#results').textContent=e.message;}
+ finally{if(pendingMapboxSearch?.revision===rev)pendingMapboxSearch=null;}
 }
 async function connectGoogle(token,journeyCenter){
+ await browserPermit();
+ if(token!==mapSwitch)return;
  if(!config.browserKey)throw Error(ui.googleKeyMissing);
  await loadGoogleMaps(config.browserKey,{monitor});
  if(token!==mapSwitch)return;
@@ -629,6 +656,7 @@ function commitProvider(provider){
  cancelSearchForSwitch();updateProviderUI();refresh('provider');
 }
 async function switchMapbox(options={}){
+ if(serviceStopped)return;
  closeProviderMenu();
  if(!options.arrival&&Object.values(segments).some(segment=>segment.mode==='TRANSIT')){
   toast(ui.transitGoogleOnly);
@@ -640,6 +668,8 @@ async function switchMapbox(options={}){
  $('#mapbox-error').hidden=true;
  try{
   await configReady;if(token!==mapSwitch)return;
+  await mapboxPermit();
+  if(token!==mapSwitch)return;
   if(!/^pk\.[A-Za-z0-9._-]+$/.test(config.mapboxToken||''))throw Error(ui.mapboxTokenMissing);
   await loadMapbox();if(token!==mapSwitch)return;
   mapboxRenderer?.destroy();
@@ -660,6 +690,7 @@ async function switchMapbox(options={}){
  }
 }
 async function switchGoogle({transitEdge,journeyCenter}={}){
+ if(serviceStopped)return;
  closeProviderMenu();
  if(pendingProvider==='google'||mapProvider==='google'&&gmap&&!transitEdge&&!journeyCenter)return;
  pendingProvider='google';
@@ -705,24 +736,69 @@ $('#choose-google').onclick=()=>switchGoogle();$('#choose-mapbox').onclick=()=>s
 document.addEventListener('click',e=>{if(!e.target.closest('.map-provider-picker'))closeProviderMenu();});
 $('.map-provider-picker').onkeydown=e=>{if(e.key==='Escape'){closeProviderMenu();$('#service').focus();}if(['ArrowDown','ArrowUp'].includes(e.key)){e.preventDefault();const buttons=[...$('#map-provider-menu').querySelectorAll('button')],index=buttons.indexOf(document.activeElement);$('#map-provider-menu').hidden=false;$('#service').setAttribute('aria-expanded','true');buttons[(index+(e.key==='ArrowDown'?1:-1)+buttons.length)%buttons.length].focus();}};
 window.addEventListener('pagehide',()=>mapboxRenderer?.destroy());
-const configReady=fetch('/api/config').then(r=>r.json()).then(c=>{config=c;monitor.setEnabled(c.requestMonitor===true);if(c.requestMonitor)window.travelLinkRequests=monitor;}).catch(()=>{});
+let serviceStopped=false,checkingService=false;
+function stopService(message){
+ if(serviceStopped)return;
+ serviceStopped=true;mapSwitch++;placeRevision++;searchRevision++;revision++;
+ for(const request of [controller,searchController,placeController,googleDetailsController])request?.abort();
+ delayedCalculation.cancel();delayedSearch.cancel();delayedMapboxSearch.cancel();
+ mapboxRenderer?.destroy();
+ if(gmap){
+  google.maps.event?.clearInstanceListeners(gmap);
+  gmap.unbindAll?.();
+  $('#google-map').replaceChildren();
+ }
+ document.querySelector('#arrival')?.close();
+ for(const node of document.body.children)node.hidden=true;
+ const notice=document.createElement('h1');
+ notice.id='service-stop';notice.tabIndex=-1;notice.textContent=message||'Travel Link is temporarily paused. Please check back later.';
+ document.body.append(notice);notice.focus();
+}
+function serviceDenied(data){
+ if(['API_SITE_STOPPED','API_USAGE_UNAVAILABLE'].includes(data?.code)){stopService(data.message);return true;}
+ return false;
+}
+async function checkService(){
+ if(serviceStopped||checkingService||document.hidden)return;
+ checkingService=true;
+ try{
+  const response=await fetch('/api/service-status',{signal:AbortSignal.timeout(5000)});
+  if(response.status===503)serviceDenied(await response.json());
+ }catch{}finally{checkingService=false;}
+}
+const configReady=fetch('/api/config').then(r=>r.json()).then(c=>{
+ config=c;if(serviceDenied(c))return;
+ monitor.setEnabled(c.requestMonitor===true);if(c.requestMonitor)window.travelLinkRequests=monitor;
+}).catch(()=>{});
+async function browserPermit(signal,feature){
+ await configReady;
+ if(serviceStopped)throw Object.assign(Error('Travel Link is temporarily paused.'),{code:'API_SITE_STOPPED'});
+ signal?.throwIfAborted();
+ let options=config.browserOptions||{};
+ if(config.code?.startsWith('API_'))throw Object.assign(Error(config.message),{code:config.code});
+ if(config.usageGuard){
+  const timeout=AbortSignal.timeout(8000);
+  const response=await fetch('/api/usage/browser',{method:'POST',signal:signal?AbortSignal.any([signal,timeout]):timeout});
+  const data=await response.json();
+  serviceDenied(data);
+  if(!response.ok||!data.allowed)throw Object.assign(Error(data.message||'Map services are temporarily unavailable.'),{code:data.code||'API_UNAVAILABLE'});
+  options=data.browserOptions||{};
+ }
+ signal?.throwIfAborted();
+ if(feature&&options[feature]===false)throw Object.assign(Error('This map feature is disabled.'),{code:'API_FEATURE_DISABLED'});
+ return options;
+}
 decorateWoodPanels();
 const narrowItinerary=matchMedia('(max-width: 800px)');
 function sizeDayOverview(){ $('#day-overview').open=!narrowItinerary.matches; }
 sizeDayOverview();narrowItinerary.addEventListener('change',sizeDayOverview);
 const pickers=setupSchedulePickers({date:$('#date'),time:$('#time'),today:()=>dateInZone(zone())});
-async function prepareGoogle(){
- await configReady;
- if(!config.browserKey)throw Error(ui.googleKeyMissing);
- await loadGoogleMaps(config.browserKey,{monitor});
-}
 async function restoreStop(stop,savedZone,signal){
  const reference=stopReference(stop),id=restorePlaceId(reference);
  const visit={id:stop.id,stay:stop.stay,wait:stop.wait,reference};
  let restoreStatus='relink';
  if(id){
   try{
-   await prepareGoogle();
    signal?.throwIfAborted();
    const place=await placesProvider.describe({id},{signal,reason:'resume-trip'});
    if(!hasLocation(place)||!place.name)throw Error('Place details unavailable');
@@ -744,6 +820,14 @@ async function retrySavedStop(id){
  visit.place=restored.place;visit.restoreStatus=restored.restoreStatus;
  refresh('retry');
 }
+async function restoreSavedStops(stops,savedZone,signal){
+ const restored=[];
+ for(let offset=0;offset<stops.length;offset+=4){
+  signal?.throwIfAborted();
+  restored.push(...await Promise.all(stops.slice(offset,offset+4).map(stop=>restoreStop(stop,savedZone,signal))));
+ }
+ return restored;
+}
 async function relinkSavedStop(id){
  if(relinkStop===id){relinkStop=null;render();return;}
  relinkStop=id;render();
@@ -753,17 +837,24 @@ async function relinkSavedStop(id){
  toast('Search for the original place or a replacement, then choose Link to this stop.');
 }
 const onboarding=setupOnboarding({
- searchDestination:async(query,signal)=>{await prepareGoogle();return placesProvider.search(query,{signal,reason:'destination'});},
+ searchDestination:async(query,signal)=>{
+  await configReady;
+  const search=()=>placesProvider.search(query,{signal,reason:'destination'});
+  try{return await search();}
+  catch(error){
+   if(error.code!=='DESTINATION_SESSION_EXPIRED')throw error;
+   const response=await fetch('/api/config',{signal});
+   if(!response.ok){const data=await response.json();serviceDenied(data);throw Error(data.message||error.message);}
+   return search();
+  }
+ },
  timeZone:(place,signal)=>placesProvider.timeZone(place,{signal,reason:'destination'}),
  restoreDestination:async(id,savedZone,signal)=>{
-  await prepareGoogle();
-  const {Place}=await google.maps.importLibrary('places'),place=new Place({id,requestedLanguage:'en'});
-  await place.fetchFields({fields:['displayName','location']});
+  const point=await placesProvider.restore(id,signal);
   signal?.throwIfAborted();
-  const point={id,name:place.displayName,lat:place.location.lat(),lng:place.location.lng()};
   return {...point,zone:savedZone||await placesProvider.timeZone(point,{signal,reason:'destination'})};
  },
- loadStops:(stops,savedZone,signal)=>Promise.all(stops.map(stop=>restoreStop(stop,savedZone,signal))),
+ loadStops:restoreSavedStops,
  prepareGlobe:async()=>{
   await initialMap;
   if(!mapboxRenderer?.ready)await switchMapbox({initial:true,arrival:true});
@@ -790,7 +881,12 @@ const onboarding=setupOnboarding({
  },
 });
 render();
-onboarding.open();
+configReady.then(()=>{if(!serviceStopped)onboarding.open();});
+const serviceTimer=setInterval(()=>{
+ if(serviceStopped)clearInterval(serviceTimer);
+ else checkService();
+},20000);
+document.addEventListener('visibilitychange',checkService);
 updateProviderUI();const initialMap=configReady.then(()=>{
  if(mapSwitch!==0)return;
  return switchMapbox({initial:true});
