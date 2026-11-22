@@ -30,7 +30,7 @@ export const greenMapStyles = [
 ];
 export function mapOptions(mapId='') {
   return {center:destination.center,zoom:destination.zoom,mapTypeId:'roadmap',
-    mapTypeControl:false,streetViewControl:false,fullscreenControl:false,clickableIcons:true,
+    mapTypeControl:false,streetViewControl:false,fullscreenControl:false,cameraControl:false,clickableIcons:true,
     ...(mapId.trim()?{mapId:mapId.trim()}:{renderingType:'RASTER',styles:greenMapStyles})};
 }
 
